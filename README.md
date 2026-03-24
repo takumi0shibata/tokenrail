@@ -9,12 +9,52 @@ It focuses on:
 - per-model token / TPM / RPM / cost monitoring
 - a provider abstraction that can grow to other local or hosted backends later
 
-## Install
+## Install From GitHub With uv
+
+Add `tokenrail` as a Git dependency from your own project.
+
+```toml
+[project]
+dependencies = [
+    "tokenrail",
+]
+
+[tool.uv.sources]
+tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.1.0" }
+```
+
+Then sync:
 
 ```bash
-uv add openai
-uv add 'tokenrail[hf]'
+uv sync
 ```
+
+If you want Hugging Face local-model support too:
+
+```toml
+[project]
+dependencies = [
+    "tokenrail[hf]",
+]
+
+[tool.uv.sources]
+tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.1.0" }
+```
+
+For day-to-day development you can temporarily track a branch instead of a tag:
+
+```toml
+[tool.uv.sources]
+tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", rev = "main" }
+```
+
+Set your API key in the consuming project before using OpenAI:
+
+```bash
+export OPENAI_API_KEY=...
+```
+
+## Install For This Repository
 
 If you are developing this repository directly:
 
