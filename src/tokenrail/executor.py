@@ -111,6 +111,11 @@ class BatchExecutor:
         done_ids = self._load_done_ids()
         todo = [item for item in normalized_items if item.id not in done_ids]
         skipped = len(normalized_items) - len(todo)
+        self.monitor.start(
+            total_requests=len(normalized_items),
+            todo_requests=len(todo),
+            skipped_requests=skipped,
+        )
 
         if getattr(self.client.provider, "supports_batching", False):
             self._run_batched(todo)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
+from datetime import datetime
 from typing import Callable
 
 from .types import ModelStats, NormalizedResponse, StatsSnapshot
@@ -26,13 +27,68 @@ class RollingMetricsMonitor:
             self._events.clear()
             self._snapshot = StatsSnapshot()
 
+    def start(self, *, total_requests: int, todo_requests: int, skipped_requests: int) -> StatsSnapshot:
+        with self._lock:
+            now = time.time()
+            self._snapshot.total_requests = total_requests
+            self._snapshot.todo_requests = todo_requests
+            self._snapshot.skipped_requests = skipped_requests
+            self._snapshot.remaining_requests = todo_requests
+            self._snapshot.started_at = now
+            self._snapshot.last_updated_at = now
+            self._snapshot.elapsed_seconds = 0.0
+            if todo_requests == 0:
+                self._snapshot.eta_seconds = 0.0
+                self._snapshot.estimated_finished_at = now
+            else:
+                self._snapshot.eta_seconds = None
+                self._snapshot.estimated_finished_at = None
+            return self._copy_snapshot_unlocked()
+
+    def _recompute_time_fields_unlocked(self, now: float) -> None:
+        self._snapshot.last_updated_at = now
+        if self._snapshot.started_at is None:
+            self._snapshot.elapsed_seconds = 0.0
+            self._snapshot.remaining_requests = self._snapshot.todo_requests
+            self._snapshot.eta_seconds = None
+            self._snapshot.estimated_finished_at = None
+            return
+
+        self._snapshot.elapsed_seconds = max(now - self._snapshot.started_at, 0.0)
+        self._snapshot.remaining_requests = max(self._snapshot.todo_requests - self._snapshot.processed_requests, 0)
+        if self._snapshot.todo_requests == 0:
+            self._snapshot.eta_seconds = 0.0
+            self._snapshot.estimated_finished_at = self._snapshot.started_at
+            return
+        if self._snapshot.processed_requests == 0 or self._snapshot.elapsed_seconds <= 0:
+            self._snapshot.eta_seconds = None
+            self._snapshot.estimated_finished_at = None
+            return
+
+        processing_rate = self._snapshot.processed_requests / self._snapshot.elapsed_seconds
+        if processing_rate <= 0:
+            self._snapshot.eta_seconds = None
+            self._snapshot.estimated_finished_at = None
+            return
+
+        eta_seconds = self._snapshot.remaining_requests / processing_rate
+        self._snapshot.eta_seconds = eta_seconds
+        self._snapshot.estimated_finished_at = now + eta_seconds
+
     def _copy_snapshot_unlocked(self) -> StatsSnapshot:
         return StatsSnapshot(
             total_requests=self._snapshot.total_requests,
+            todo_requests=self._snapshot.todo_requests,
             processed_requests=self._snapshot.processed_requests,
             success_requests=self._snapshot.success_requests,
             error_requests=self._snapshot.error_requests,
             skipped_requests=self._snapshot.skipped_requests,
+            remaining_requests=self._snapshot.remaining_requests,
+            started_at=self._snapshot.started_at,
+            last_updated_at=self._snapshot.last_updated_at,
+            elapsed_seconds=self._snapshot.elapsed_seconds,
+            eta_seconds=self._snapshot.eta_seconds,
+            estimated_finished_at=self._snapshot.estimated_finished_at,
             input_tokens=self._snapshot.input_tokens,
             cached_tokens=self._snapshot.cached_tokens,
             output_tokens=self._snapshot.output_tokens,
@@ -88,6 +144,7 @@ class RollingMetricsMonitor:
 
             self._snapshot.rolling_rpm = float(len(self._events))
             self._snapshot.rolling_tpm = float(sum(tokens for _, tokens in self._events))
+            self._recompute_time_fields_unlocked(now)
             snapshot = self._copy_snapshot_unlocked()
 
         if self.printer is not None:
@@ -102,15 +159,33 @@ class RollingMetricsMonitor:
         with self._lock:
             self._snapshot.total_requests = total_requests
             self._snapshot.skipped_requests = skipped_requests
+            self._snapshot.todo_requests = max(total_requests - skipped_requests, 0)
+            self._recompute_time_fields_unlocked(time.time())
             return self._copy_snapshot_unlocked()
+
+    def _format_duration(self, seconds: float | None) -> str:
+        if seconds is None:
+            return "-"
+        whole = max(int(round(seconds)), 0)
+        hours, remainder = divmod(whole, 3600)
+        minutes, secs = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+    def _format_finish_time(self, timestamp: float | None) -> str:
+        if timestamp is None:
+            return "-"
+        return datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
 
     def format_update(self, response: NormalizedResponse, snapshot: StatsSnapshot) -> str:
         usage = response.usage
         payer = response.cost.payer if response.cost is not None else None
         nominal = response.cost.nominal_usd if response.cost is not None else 0.0
         return (
-            f"[{snapshot.processed_requests}] id={response.id} model={response.model} "
+            f"[{snapshot.processed_requests}/{snapshot.total_requests}] id={response.id} model={response.model} "
             f"status={'ok' if response.error is None else 'error'} "
+            f"elapsed={self._format_duration(snapshot.elapsed_seconds)} "
+            f"eta={self._format_duration(snapshot.eta_seconds)} "
+            f"finish={self._format_finish_time(snapshot.estimated_finished_at)} "
             f"in={usage.input_tokens} cached={usage.cached_tokens} out={usage.output_tokens} "
             f"reasoning={usage.reasoning_tokens} total={usage.total_tokens} "
             f"rpm={snapshot.rolling_rpm:.0f} tpm={snapshot.rolling_tpm:.0f} "

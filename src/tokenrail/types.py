@@ -155,10 +155,17 @@ class ModelStats:
 @dataclass(slots=True)
 class StatsSnapshot:
     total_requests: int = 0
+    todo_requests: int = 0
     processed_requests: int = 0
     success_requests: int = 0
     error_requests: int = 0
     skipped_requests: int = 0
+    remaining_requests: int = 0
+    started_at: float | None = None
+    last_updated_at: float | None = None
+    elapsed_seconds: float = 0.0
+    eta_seconds: float | None = None
+    estimated_finished_at: float | None = None
     input_tokens: int = 0
     cached_tokens: int = 0
     output_tokens: int = 0
@@ -174,10 +181,17 @@ class StatsSnapshot:
     def to_dict(self) -> JsonDict:
         return {
             "total_requests": self.total_requests,
+            "todo_requests": self.todo_requests,
             "processed_requests": self.processed_requests,
             "success_requests": self.success_requests,
             "error_requests": self.error_requests,
             "skipped_requests": self.skipped_requests,
+            "remaining_requests": self.remaining_requests,
+            "started_at": self.started_at,
+            "last_updated_at": self.last_updated_at,
+            "elapsed_seconds": self.elapsed_seconds,
+            "eta_seconds": self.eta_seconds,
+            "estimated_finished_at": self.estimated_finished_at,
             "input_tokens": self.input_tokens,
             "cached_tokens": self.cached_tokens,
             "output_tokens": self.output_tokens,

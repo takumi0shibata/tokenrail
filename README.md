@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.1.1" }
+tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.1.2" }
 ```
 
 Then sync:
@@ -36,7 +36,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.1.1" }
+tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.1.2" }
 ```
 
 Set your API key in the consuming project before using OpenAI:
