@@ -78,12 +78,34 @@ _PRICING_RULES: list[tuple[tuple[str, ...], ModelPricing]] = [
 ]
 
 
+_MODEL_NAME_DELIMITERS = {"-", "_", "/", ":", " ", "."}
+
+
+def _is_delimited_match(model: str, candidate: str, start: int, end: int) -> bool:
+    before = model[start - 1] if start > 0 else None
+    after = model[end] if end < len(model) else None
+    before_ok = before is None or before in _MODEL_NAME_DELIMITERS
+    after_ok = after is None or after in _MODEL_NAME_DELIMITERS
+    return before_ok and after_ok
+
+
 def _match_rule(model: str, rules: Iterable[tuple[tuple[str, ...], object]]) -> object | None:
-    for prefixes, payload in rules:
+    matches: list[tuple[int, int, object]] = []
+    for rule_index, (prefixes, payload) in enumerate(rules):
         for prefix in prefixes:
-            if model.startswith(prefix):
-                return payload
-    return None
+            start = model.find(prefix)
+            while start != -1:
+                end = start + len(prefix)
+                if _is_delimited_match(model, prefix, start, end):
+                    matches.append((len(prefix), rule_index, payload))
+                    break
+                start = model.find(prefix, start + 1)
+
+    if not matches:
+        return None
+
+    matches.sort(key=lambda item: (-item[0], item[1]))
+    return matches[0][2]
 
 
 def get_model_capabilities(model: str) -> ModelCapabilities:

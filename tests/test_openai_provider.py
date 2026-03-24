@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tokenrail.catalog import get_model_capabilities, get_model_pricing
 from tokenrail.client import RailClient
 from tokenrail.providers.openai import OpenAIProvider
 from tokenrail.sinks import PerRequestJsonSink, ResultsJsonlSink
@@ -29,11 +30,46 @@ class _FakeClient:
         self.responses = responses_api
 
 
+class _BuiltClient:
+    def __init__(self):
+        self.responses = _FakeResponsesAPI([])
+
+
 class FakeRateLimitError(Exception):
     pass
 
 
 class OpenAIProviderTests(unittest.TestCase):
+    def test_base_url_is_forwarded_when_building_client(self):
+        captured = {}
+
+        class TestProvider(OpenAIProvider):
+            def _build_client(self, *, api_key, organization, timeout, base_url):
+                captured["api_key"] = api_key
+                captured["organization"] = organization
+                captured["timeout"] = timeout
+                captured["base_url"] = base_url
+                return _BuiltClient()
+
+        test_provider = TestProvider(
+            api_key="test-key",
+            organization="test-org",
+            timeout=12.0,
+            base_url="https://example.test/v1",
+        )
+        self.assertEqual(captured["base_url"], "https://example.test/v1")
+        self.assertEqual(captured["api_key"], "test-key")
+        self.assertEqual(captured["organization"], "test-org")
+        self.assertEqual(captured["timeout"], 12.0)
+        self.assertIsInstance(test_provider._client, _BuiltClient)
+
+    def test_railclient_openai_accepts_base_url_with_injected_client(self):
+        client = RailClient.openai(
+            client=_FakeClient(_FakeResponsesAPI([])),
+            base_url="https://example.test/v1",
+        )
+        self.assertIsInstance(client.provider, OpenAIProvider)
+
     def test_reasoning_effort_is_blocked_for_gpt41(self):
         provider = OpenAIProvider(client=_FakeClient(_FakeResponsesAPI([])))
         with self.assertRaises(ValueError):
@@ -98,6 +134,36 @@ class OpenAIProviderTests(unittest.TestCase):
         self.assertEqual(response.id, "job-1")
         self.assertEqual(len(api.calls), 2)
         self.assertAlmostEqual(response.cost.openai_usd, response.cost.nominal_usd)
+
+    def test_model_pricing_matches_delimited_substrings(self):
+        pricing = get_model_pricing("GEE-123456-2026-gpt-5.2")
+        self.assertIsNotNone(pricing)
+        self.assertEqual(str(pricing.input_per_million), "1.75")
+
+        pricing = get_model_pricing("vendor/gpt-5.4-mini")
+        self.assertIsNotNone(pricing)
+        self.assertEqual(str(pricing.input_per_million), "0.750")
+
+        pricing = get_model_pricing("abcgpt-5.2xyz")
+        self.assertIsNone(pricing)
+
+    def test_longest_match_wins_for_model_rules(self):
+        pricing = get_model_pricing("gpt-5.4-mini-2026-03-17")
+        self.assertIsNotNone(pricing)
+        self.assertEqual(str(pricing.input_per_million), "0.750")
+
+        pricing = get_model_pricing("gpt-5.4-2026-03-05")
+        self.assertIsNotNone(pricing)
+        self.assertEqual(str(pricing.input_per_million), "2.50")
+
+        pricing = get_model_pricing("gpt-5.4-nano-2026-03-17")
+        self.assertIsNotNone(pricing)
+        self.assertEqual(str(pricing.input_per_million), "0.20")
+
+    def test_capability_matching_uses_same_lookup(self):
+        capabilities = get_model_capabilities("foo/gpt-4o-mini")
+        self.assertTrue(capabilities.verbosity)
+        self.assertFalse(capabilities.reasoning_effort)
 
 
 class SinkTests(unittest.TestCase):

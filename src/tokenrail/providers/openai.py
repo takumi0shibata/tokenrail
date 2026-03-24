@@ -46,22 +46,35 @@ class OpenAIProvider(BaseProvider):
         api_key: str | None = None,
         organization: str | None = None,
         timeout: float | None = None,
+        base_url: str | None = None,
         max_retries: int = 6,
         base_sleep: float = 1.0,
         retry_exceptions: tuple[type[BaseException], ...] | None = None,
     ) -> None:
-        self._client = client or self._build_client(api_key=api_key, organization=organization, timeout=timeout)
+        self._client = client or self._build_client(
+            api_key=api_key,
+            organization=organization,
+            timeout=timeout,
+            base_url=base_url,
+        )
         self._responses = self._client.responses
         self.max_retries = max_retries
         self.base_sleep = base_sleep
         self.retry_exceptions = retry_exceptions if retry_exceptions is not None else self._default_retry_exceptions()
 
-    def _build_client(self, *, api_key: str | None, organization: str | None, timeout: float | None) -> Any:
+    def _build_client(
+        self,
+        *,
+        api_key: str | None,
+        organization: str | None,
+        timeout: float | None,
+        base_url: str | None,
+    ) -> Any:
         try:
             from openai import OpenAI
         except ImportError as exc:
             raise ImportError("openai is required for RailClient.openai(). Install it with `uv add openai`.") from exc
-        return OpenAI(api_key=api_key, organization=organization, timeout=timeout)
+        return OpenAI(api_key=api_key, organization=organization, timeout=timeout, base_url=base_url)
 
     def _default_retry_exceptions(self) -> tuple[type[BaseException], ...]:
         try:

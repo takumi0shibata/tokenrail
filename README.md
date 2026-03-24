@@ -5,9 +5,7 @@
 It focuses on:
 
 - thread-based OpenAI batch execution
-- incremental persistence to per-request JSON or projected JSONL
 - per-model token / TPM / RPM / cost monitoring
-- a provider abstraction that can grow to other local or hosted backends later
 
 ## Install From GitHub With uv
 
@@ -20,7 +18,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.1.0" }
+tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.1.1" }
 ```
 
 Then sync:
@@ -38,14 +36,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.1.0" }
-```
-
-For day-to-day development you can temporarily track a branch instead of a tag:
-
-```toml
-[tool.uv.sources]
-tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", rev = "main" }
+tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.1.1" }
 ```
 
 Set your API key in the consuming project before using OpenAI:
@@ -54,18 +45,10 @@ Set your API key in the consuming project before using OpenAI:
 export OPENAI_API_KEY=...
 ```
 
-## Install For This Repository
-
-If you are developing this repository directly:
-
-```bash
-uv sync --extra hf
-```
-
 ## OpenAI usage
 
 ```python
-from tokenrail import BatchExecutor, PerRequestJsonSink, RailClient, RollingMetricsMonitor
+from tokenrail import BatchExecutor, ResultsJsonlSink, PerRequestJsonSink, RailClient, RollingMetricsMonitor
 from tokenrail.executor import batch_items_from_queries
 
 client = RailClient.openai(max_retries=6)
@@ -82,23 +65,8 @@ items = batch_items_from_queries(
     verbosity="low",
 )
 
-executor = BatchExecutor(
-    client=client,
-    max_workers=16,
-    sinks=[PerRequestJsonSink("out/raw")],
-    monitor=RollingMetricsMonitor(),
-)
-
-stats = executor.run(items)
-print(stats.to_dict())
-```
-
-## JSONL projection
-
-```python
-from tokenrail import ResultsJsonlSink
-
-sink = ResultsJsonlSink(
+# Consolidate only the necessary elements from all processing results into a single file.
+result_sink = ResultsJsonlSink(
     "out/results.jsonl",
     projector=lambda response: {
         "id": response.id,
@@ -107,6 +75,18 @@ sink = ResultsJsonlSink(
         "usage": response.usage.to_dict(),
     },
 )
+# Save the raw output of each query.
+per_request_sink = PerRequestJsonSink("out/")
+
+executor = BatchExecutor(
+    client=client,
+    max_workers=16,
+    sinks=[result_sink, per_request_sink],
+    monitor=RollingMetricsMonitor(),
+)
+
+stats = executor.run(items)
+print(stats.to_dict())
 ```
 
 ## Local Hugging Face usage
