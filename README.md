@@ -89,6 +89,8 @@ stats = executor.run(items)
 print(stats.to_dict())
 ```
 
+`max_retries` configures the OpenAI Python SDK client's built-in retry behavior. `tokenrail` does not add its own retry loop on top.
+
 ## Local Hugging Face usage
 
 ```python

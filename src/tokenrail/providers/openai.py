@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 import time
 from typing import Any
 
@@ -48,19 +47,15 @@ class OpenAIProvider(BaseProvider):
         timeout: float | None = None,
         base_url: str | None = None,
         max_retries: int = 6,
-        base_sleep: float = 1.0,
-        retry_exceptions: tuple[type[BaseException], ...] | None = None,
     ) -> None:
         self._client = client or self._build_client(
             api_key=api_key,
             organization=organization,
             timeout=timeout,
             base_url=base_url,
+            max_retries=max_retries,
         )
         self._responses = self._client.responses
-        self.max_retries = max_retries
-        self.base_sleep = base_sleep
-        self.retry_exceptions = retry_exceptions if retry_exceptions is not None else self._default_retry_exceptions()
 
     def _build_client(
         self,
@@ -69,19 +64,19 @@ class OpenAIProvider(BaseProvider):
         organization: str | None,
         timeout: float | None,
         base_url: str | None,
+        max_retries: int,
     ) -> Any:
         try:
             from openai import OpenAI
         except ImportError as exc:
             raise ImportError("openai is required for RailClient.openai(). Install it with `uv add openai`.") from exc
-        return OpenAI(api_key=api_key, organization=organization, timeout=timeout, base_url=base_url)
-
-    def _default_retry_exceptions(self) -> tuple[type[BaseException], ...]:
-        try:
-            from openai import APIError, APITimeoutError, InternalServerError, RateLimitError
-        except ImportError:
-            return ()
-        return (RateLimitError, APITimeoutError, InternalServerError, APIError)
+        return OpenAI(
+            api_key=api_key,
+            organization=organization,
+            timeout=timeout,
+            base_url=base_url,
+            max_retries=max_retries,
+        )
 
     def _validate_capabilities(
         self,
@@ -191,35 +186,26 @@ class OpenAIProvider(BaseProvider):
         )
 
         started_at = time.time()
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                response = self._responses.create(**payload)
-                completed_at = time.time()
-                raw = _serialize_response(response)
-                usage = UsageBreakdown.from_dict(raw.get("usage")).finalized()
-                billing = raw.get("billing")
-                actual_tier = str(raw.get("service_tier") or service_tier or "default")
-                cost = calculate_cost(model=model, usage=usage, payer=(billing or {}).get("payer"), service_tier=actual_tier)
-                return NormalizedResponse(
-                    id=request_id or str(raw.get("id") or ""),
-                    model=str(raw.get("model") or model),
-                    provider=self.name,
-                    output_text=_extract_output_text(raw),
-                    raw_response=raw,
-                    usage=usage,
-                    billing=billing if isinstance(billing, dict) else None,
-                    cost=cost,
-                    timing=TimingBreakdown(
-                        started_at=started_at,
-                        completed_at=completed_at,
-                        latency_seconds=completed_at - started_at,
-                    ),
-                    metadata=metadata,
-                )
-            except self.retry_exceptions:
-                if attempt == self.max_retries:
-                    raise
-                sleep = self.base_sleep * (2 ** (attempt - 1))
-                time.sleep(sleep * (0.5 + random.random()))
-
-        raise RuntimeError("OpenAIProvider retry loop exited unexpectedly")
+        response = self._responses.create(**payload)
+        completed_at = time.time()
+        raw = _serialize_response(response)
+        usage = UsageBreakdown.from_dict(raw.get("usage")).finalized()
+        billing = raw.get("billing")
+        actual_tier = str(raw.get("service_tier") or service_tier or "default")
+        cost = calculate_cost(model=model, usage=usage, payer=(billing or {}).get("payer"), service_tier=actual_tier)
+        return NormalizedResponse(
+            id=request_id or str(raw.get("id") or ""),
+            model=str(raw.get("model") or model),
+            provider=self.name,
+            output_text=_extract_output_text(raw),
+            raw_response=raw,
+            usage=usage,
+            billing=billing if isinstance(billing, dict) else None,
+            cost=cost,
+            timing=TimingBreakdown(
+                started_at=started_at,
+                completed_at=completed_at,
+                latency_seconds=completed_at - started_at,
+            ),
+            metadata=metadata,
+        )

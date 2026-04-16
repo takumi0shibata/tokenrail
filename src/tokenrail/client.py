@@ -29,10 +29,8 @@ class RailClient:
         organization: str | None = None,
         timeout: float | None = None,
         base_url: str | None = None,
-        max_retries: int = 6,
-        base_sleep: float = 1.0,
+        max_retries: int = 2,
         client: Any | None = None,
-        retry_exceptions: tuple[type[BaseException], ...] | None = None,
     ) -> "RailClient":
         provider = OpenAIProvider(
             client=client,
@@ -41,8 +39,6 @@ class RailClient:
             timeout=timeout,
             base_url=base_url,
             max_retries=max_retries,
-            base_sleep=base_sleep,
-            retry_exceptions=retry_exceptions,
         )
         return cls(provider=provider)
 

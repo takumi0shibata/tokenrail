@@ -35,20 +35,17 @@ class _BuiltClient:
         self.responses = _FakeResponsesAPI([])
 
 
-class FakeRateLimitError(Exception):
-    pass
-
-
 class OpenAIProviderTests(unittest.TestCase):
     def test_base_url_is_forwarded_when_building_client(self):
         captured = {}
 
         class TestProvider(OpenAIProvider):
-            def _build_client(self, *, api_key, organization, timeout, base_url):
+            def _build_client(self, *, api_key, organization, timeout, base_url, max_retries):
                 captured["api_key"] = api_key
                 captured["organization"] = organization
                 captured["timeout"] = timeout
                 captured["base_url"] = base_url
+                captured["max_retries"] = max_retries
                 return _BuiltClient()
 
         test_provider = TestProvider(
@@ -56,11 +53,13 @@ class OpenAIProviderTests(unittest.TestCase):
             organization="test-org",
             timeout=12.0,
             base_url="https://example.test/v1",
+            max_retries=4,
         )
         self.assertEqual(captured["base_url"], "https://example.test/v1")
         self.assertEqual(captured["api_key"], "test-key")
         self.assertEqual(captured["organization"], "test-org")
         self.assertEqual(captured["timeout"], 12.0)
+        self.assertEqual(captured["max_retries"], 4)
         self.assertIsInstance(test_provider._client, _BuiltClient)
 
     def test_railclient_openai_accepts_base_url_with_injected_client(self):
@@ -108,32 +107,12 @@ class OpenAIProviderTests(unittest.TestCase):
         self.assertEqual(response.usage.cached_tokens, 2)
         self.assertGreater(response.cost.developer_usd, 0.0)
 
-    def test_retry_then_success(self):
-        payload = {
-            "id": "resp_2",
-            "model": "gpt-5.4-mini-2026-03-17",
-            "service_tier": "default",
-            "output_text": "ok",
-            "usage": {
-                "input_tokens": 2,
-                "input_tokens_details": {"cached_tokens": 0},
-                "output_tokens": 1,
-                "output_tokens_details": {"reasoning_tokens": 0},
-                "total_tokens": 3,
-            },
-            "billing": {"payer": "openai"},
-        }
-        api = _FakeResponsesAPI([payload], error=[FakeRateLimitError("retry"), None])
-        provider = OpenAIProvider(
-            client=_FakeClient(api),
-            max_retries=2,
-            base_sleep=0,
-            retry_exceptions=(FakeRateLimitError,),
-        )
-        response = provider.create(model="gpt-5.4-mini-2026-03-17", input="hello", request_id="job-1")
-        self.assertEqual(response.id, "job-1")
-        self.assertEqual(len(api.calls), 2)
-        self.assertAlmostEqual(response.cost.openai_usd, response.cost.nominal_usd)
+    def test_create_propagates_exceptions_without_local_retry(self):
+        api = _FakeResponsesAPI([], error=[RuntimeError("boom")])
+        provider = OpenAIProvider(client=_FakeClient(api))
+        with self.assertRaisesRegex(RuntimeError, "boom"):
+            provider.create(model="gpt-5.4-mini-2026-03-17", input="hello", request_id="job-1")
+        self.assertEqual(len(api.calls), 1)
 
     def test_model_pricing_matches_delimited_substrings(self):
         pricing = get_model_pricing("GEE-123456-2026-gpt-5.2")
