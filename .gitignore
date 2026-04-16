@@ -11,5 +11,4 @@ wheels/
 
 # Other
 .env
-sample.py
 sample_out
