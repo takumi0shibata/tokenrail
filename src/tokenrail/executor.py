@@ -81,29 +81,26 @@ class BatchExecutor:
 
     def _run_batched(self, items: list[BatchItem]) -> None:
         provider = self.client.provider
-        batch_size = getattr(provider, "batch_size", 1)
-        for index in range(0, len(items), batch_size):
-            chunk = items[index : index + batch_size]
-            requests = [self._request_kwargs(item) for item in chunk]
-            try:
-                responses = provider.create_many(requests)
-                response_by_id = {response.id: response for response in responses}
-                for item in chunk:
-                    response = response_by_id.get(item.id)
-                    if response is None:
-                        response = _error_response(
-                            item.id,
-                            model=str(requests[0].get("model") or getattr(provider, "model_id", "unknown")),
-                            provider=provider.name,
-                            error=RuntimeError("provider returned no response"),
-                        )
-                    self._save(response)
-                    self.monitor.record(response)
-            except Exception:
-                for item in chunk:
-                    response = self._call_single(item)
-                    self._save(response)
-                    self.monitor.record(response)
+        requests = [self._request_kwargs(item) for item in items]
+        try:
+            responses = provider.create_many(requests)
+            response_by_id = {response.id: response for response in responses}
+            for item in items:
+                response = response_by_id.get(item.id)
+                if response is None:
+                    response = _error_response(
+                        item.id,
+                        model=str(requests[0].get("model") or getattr(provider, "model_id", "unknown")),
+                        provider=provider.name,
+                        error=RuntimeError("provider returned no response"),
+                    )
+                self._save(response)
+                self.monitor.record(response)
+        except Exception:
+            for item in items:
+                response = self._call_single(item)
+                self._save(response)
+                self.monitor.record(response)
 
     def run(self, items: Sequence[BatchItem] | dict[str, Any]) -> StatsSnapshot:
         self.monitor.reset()

@@ -1,4 +1,4 @@
-from .hf import HFTransformersProvider
 from .openai import OpenAIProvider
+from .vllm import VLLMProvider
 
-__all__ = ["HFTransformersProvider", "OpenAIProvider"]
+__all__ = ["OpenAIProvider", "VLLMProvider"]

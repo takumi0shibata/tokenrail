@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from .providers.base import BaseProvider
-from .providers.hf import HFTransformersProvider
 from .providers.openai import OpenAIProvider
+from .providers.vllm import VLLMProvider
 from .types import NormalizedResponse
 
 
@@ -43,18 +43,30 @@ class RailClient:
         return cls(provider=provider)
 
     @classmethod
-    def hf(
+    def vllm(
         cls,
         *,
         model_id: str,
-        device_map: str = "auto",
-        dtype: str = "auto",
-        batch_size: int = 1,
+        family: str,
+        batch_flush_size: int = 256,
+        dtype: str = "bfloat16",
+        max_model_len: int | None = None,
+        gpu_memory_utilization: float = 0.9,
+        quantization: str | None = None,
+        trust_remote_code: bool = False,
+        enable_prefix_caching: bool = False,
+        seed: int | None = None,
     ) -> "RailClient":
-        provider = HFTransformersProvider(
+        provider = VLLMProvider(
             model_id=model_id,
-            device_map=device_map,
+            family=family,
+            batch_flush_size=batch_flush_size,
             dtype=dtype,
-            batch_size=batch_size,
+            max_model_len=max_model_len,
+            gpu_memory_utilization=gpu_memory_utilization,
+            quantization=quantization,
+            trust_remote_code=trust_remote_code,
+            enable_prefix_caching=enable_prefix_caching,
+            seed=seed,
         )
         return cls(provider=provider)
