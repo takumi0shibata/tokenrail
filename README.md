@@ -172,6 +172,46 @@ response = client.responses.create(
 print(response.output_text)
 ```
 
+Batch execution uses the same `BatchExecutor` surface. `tokenrail` sends concurrent HTTP requests to the local vLLM-Metal server, and vLLM-Metal schedules them according to server settings such as `--max-num-seqs`.
+
+```python
+from tokenrail import BatchExecutor, PerRequestJsonSink, RailClient, ResultsJsonlSink, RollingMetricsMonitor
+from tokenrail.executor import batch_items_from_queries
+
+client = RailClient.vllm_server(
+    base_url="http://localhost:8000/v1",
+    api_key="EMPTY",
+)
+
+queries = {
+    "q1": [{"role": "user", "content": "Output only this lowercase token: ok"}],
+    "q2": [{"role": "user", "content": "Output only this lowercase token: blue"}],
+    "q3": [{"role": "user", "content": "Output only this digit: 7"}],
+}
+
+items = batch_items_from_queries(
+    queries,
+    model="mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+    max_output_tokens=16,
+    temperature=0.0,
+)
+
+executor = BatchExecutor(
+    client=client,
+    max_workers=8,
+    sinks=[
+        ResultsJsonlSink("out/results.jsonl"),
+        PerRequestJsonSink("out/requests"),
+    ],
+    monitor=RollingMetricsMonitor(),
+)
+
+stats = executor.run(items)
+print(stats.to_dict())
+```
+
+For Apple Silicon server mode, tune both sides together: `max_workers` controls how many requests tokenrail sends concurrently, while vLLM-Metal's `--max-num-seqs` controls how many active sequences the local server schedules at once.
+
 `gpu_memory_utilization` is the CUDA vLLM memory knob for in-process Linux vLLM. On Apple Silicon, configure memory on the vLLM-Metal server side.
 
 ## Local vLLM batch execution
