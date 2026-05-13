@@ -1,6 +1,6 @@
 [project]
 name = "tokenrail"
-version = "0.2.0"
+version = "0.2.1"
 description = "Thin client and batch execution helpers for OpenAI and local LLM workloads."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -11,9 +11,12 @@ dependencies = [
 [project.optional-dependencies]
 vllm = [
     "vllm>=0.19.1; sys_platform != 'darwin' or platform_machine != 'arm64'",
-    "vllm-metal[vllm]>=0.1.0; sys_platform == 'darwin' and platform_machine == 'arm64' and python_version >= '3.12'",
     "transformers>=5.5.0",
 ]
+
+[project.scripts]
+sample = "tokenrail.sample_cli:main"
+tokenrail-sample = "tokenrail.sample_cli:main"
 
 [build-system]
 requires = ["hatchling>=1.27.0"]

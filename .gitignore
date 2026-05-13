@@ -11,4 +11,4 @@ wheels/
 
 # Other
 .env
-sample_out
+sample_out*

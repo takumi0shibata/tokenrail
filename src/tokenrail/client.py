@@ -5,6 +5,7 @@ from typing import Any
 from .providers.base import BaseProvider
 from .providers.openai import OpenAIProvider
 from .providers.vllm import VLLMProvider
+from .providers.vllm_server import VLLMServerProvider
 from .types import NormalizedResponse
 
 
@@ -74,5 +75,24 @@ class RailClient:
             device=device,
             metal_memory_fraction=metal_memory_fraction,
             extra_llm_kwargs=extra_llm_kwargs,
+        )
+        return cls(provider=provider)
+
+    @classmethod
+    def vllm_server(
+        cls,
+        *,
+        base_url: str = "http://localhost:8000/v1",
+        api_key: str = "EMPTY",
+        timeout: float | None = None,
+        max_retries: int = 2,
+        client: Any | None = None,
+    ) -> "RailClient":
+        provider = VLLMServerProvider(
+            base_url=base_url,
+            api_key=api_key,
+            timeout=timeout,
+            max_retries=max_retries,
+            client=client,
         )
         return cls(provider=provider)

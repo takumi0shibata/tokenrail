@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.2.0" }
+tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.2.1" }
 ```
 
 Then sync:
@@ -27,7 +27,7 @@ Then sync:
 uv sync
 ```
 
-If you want local vLLM support too:
+If you want in-process local vLLM support on Linux too:
 
 ```toml
 [project]
@@ -36,10 +36,10 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.2.0" }
+tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.2.1" }
 ```
 
-On Linux this installs vLLM. On Apple Silicon macOS, use Python 3.12 or newer; the same extra installs vLLM-Metal, the vLLM hardware plugin for Metal/MLX acceleration.
+On Linux this installs vLLM for in-process execution. On Apple Silicon macOS, use vLLM-Metal as an OpenAI-compatible server instead of installing `tokenrail[vllm]`; the normal vLLM package pulls CUDA/NVIDIA dependencies that are not installable on macOS.
 
 Set your API key in the consuming project before using OpenAI:
 
@@ -93,7 +93,7 @@ print(stats.to_dict())
 
 `max_retries` configures the OpenAI Python SDK client's built-in retry behavior. `tokenrail` does not add its own retry loop on top.
 
-## Local vLLM usage
+## Local vLLM Usage On Linux
 
 ```python
 from tokenrail import RailClient
@@ -122,22 +122,57 @@ print(response.output_text)
 print(response.usage.to_dict())
 ```
 
-For Apple Silicon, use vLLM-Metal with an MLX-optimized text model:
+## Local vLLM-Metal Usage On Apple Silicon
+
+Install vLLM-Metal using the official installer. It creates a separate `~/.venv-vllm-metal` environment containing vLLM-Metal, vLLM core, MLX, and related libraries. Keep this environment separate from the project environment that runs tokenrail.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vllm-project/vllm-metal/main/install.sh | bash
+```
+
+Start the vLLM-Metal server in one shell:
+
+```bash
+~/.venv-vllm-metal/bin/vllm serve \
+  mlx-community/Qwen2.5-0.5B-Instruct-4bit \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --max-model-len 512 \
+  --max-num-seqs 8
+```
+
+Run tokenrail from another shell. On Apple Silicon, the `sample` command defaults to `--provider vllm-server` and connects to `http://localhost:8000/v1`.
+
+```bash
+uv sync
+uv run sample \
+  --model mlx-community/Qwen2.5-0.5B-Instruct-4bit \
+  --max-output-tokens 16 \
+  --output-dir sample_out_metal
+```
+
+Expected smoke-test result is `success_requests: 3` and `error_requests: 0`. If the server is not running or sandboxed networking blocks localhost, the result records will contain `APIConnectionError`.
+
+In another shell, connect tokenrail to the vLLM-Metal OpenAI-compatible server:
 
 ```python
 from tokenrail import RailClient
 
-client = RailClient.vllm(
-    model_id="mlx-community/Qwen2.5-0.5B-Instruct-4bit",
-    family="qwen",
-    dtype="auto",
-    max_model_len=2048,
-    metal_memory_fraction="auto",
-    extra_llm_kwargs={"max_num_seqs": 8},
+client = RailClient.vllm_server(
+    base_url="http://localhost:8000/v1",
+    api_key="EMPTY",
 )
+
+response = client.responses.create(
+    model="mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+    input=[{"role": "user", "content": "Reply with exactly: ok"}],
+    max_output_tokens=16,
+)
+
+print(response.output_text)
 ```
 
-`gpu_memory_utilization` is the CUDA vLLM memory knob. On Apple Silicon, use `metal_memory_fraction` or set `VLLM_METAL_MEMORY_FRACTION` directly.
+`gpu_memory_utilization` is the CUDA vLLM memory knob for in-process Linux vLLM. On Apple Silicon, configure memory on the vLLM-Metal server side.
 
 ## Local vLLM batch execution
 
@@ -191,6 +226,7 @@ Current built-in families:
 - `qwen`: uses the tokenizer chat template with `enable_thinking=...`
 - `gemma`: enables thinking by prefixing the system prompt with `<|think|>`
 - `batch_flush_size`: controls only how many prompts `tokenrail` passes to one `llm.generate(...)` call; actual scheduling/parallelism stays inside vLLM
+- `vllm_server`: connects to an OpenAI-compatible `/v1/chat/completions` server such as vLLM-Metal
 
 ## Notes
 
