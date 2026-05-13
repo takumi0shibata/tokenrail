@@ -43,7 +43,28 @@ def parse_args() -> argparse.Namespace:
         "--gpu-memory-utilization",
         type=float,
         default=0.92,
-        help="Fraction of GPU memory reserved by vLLM.",
+        help="Fraction of CUDA GPU memory reserved by vLLM. Use --metal-memory-fraction on Apple Silicon.",
+    )
+    parser.add_argument(
+        "--metal-memory-fraction",
+        default=None,
+        help="Apple Silicon vllm-metal memory fraction, such as auto or 0.7.",
+    )
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Optional vLLM device argument, for example cpu.",
+    )
+    parser.add_argument(
+        "--dtype",
+        default="bfloat16",
+        help="vLLM dtype argument.",
+    )
+    parser.add_argument(
+        "--max-num-seqs",
+        type=int,
+        default=None,
+        help="Optional vLLM max_num_seqs engine argument.",
     )
     parser.add_argument(
         "--enable-thinking",
@@ -77,9 +98,12 @@ def main() -> int:
         model_id=args.model,
         family=args.family,
         batch_flush_size=args.batch_flush_size,
-        dtype="bfloat16",
+        dtype=args.dtype,
         max_model_len=args.max_model_len,
         gpu_memory_utilization=args.gpu_memory_utilization,
+        metal_memory_fraction=args.metal_memory_fraction,
+        device=args.device,
+        extra_llm_kwargs={"max_num_seqs": args.max_num_seqs} if args.max_num_seqs is not None else None,
         enable_prefix_caching=True,
         trust_remote_code=True,
     )

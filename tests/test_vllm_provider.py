@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
+import sys
+import types
 import unittest
+from unittest.mock import patch
 
 from tokenrail.client import RailClient
 from tokenrail.executor import BatchExecutor, BatchItem
@@ -66,11 +70,101 @@ class _FakeLLM:
         return [self.responses_by_prompt[prompt] for prompt in prompts]
 
 
+class _FakeRuntimeLLM:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self._tokenizer = _FakeTokenizer()
+
+    def get_tokenizer(self):
+        return self._tokenizer
+
+
+def _fake_vllm_module() -> types.ModuleType:
+    module = types.ModuleType("vllm")
+    module.LLM = _FakeRuntimeLLM
+    module.SamplingParams = _FakeSamplingParams
+    return module
+
+
 class VLLMProviderTests(unittest.TestCase):
     def test_railclient_vllm_constructs_provider_and_hf_is_removed(self):
         client = RailClient.vllm(model_id="Qwen/Qwen3.5-9B", family="qwen")
         self.assertIsInstance(client.provider, VLLMProvider)
         self.assertFalse(hasattr(RailClient, "hf"))
+
+    def test_railclient_vllm_forwards_runtime_options(self):
+        client = RailClient.vllm(
+            model_id="Qwen/Qwen3.5-9B",
+            family="qwen",
+            device="cpu",
+            metal_memory_fraction=0.7,
+            extra_llm_kwargs={"max_num_seqs": 8},
+        )
+
+        self.assertEqual(client.provider.device, "cpu")
+        self.assertEqual(client.provider.metal_memory_fraction, "0.7")
+        self.assertEqual(client.provider.extra_llm_kwargs, {"max_num_seqs": 8})
+
+    def test_runtime_options_are_forwarded_to_llm(self):
+        provider = VLLMProvider(
+            model_id="Qwen/Qwen3.5-9B",
+            family="qwen",
+            device="cpu",
+            extra_llm_kwargs={"max_num_seqs": 8},
+        )
+
+        with patch.dict(sys.modules, {"vllm": _fake_vllm_module()}):
+            llm, _, _ = provider._load_runtime()
+
+        self.assertEqual(llm.kwargs["device"], "cpu")
+        self.assertEqual(llm.kwargs["max_num_seqs"], 8)
+
+    def test_extra_llm_kwargs_cannot_override_explicit_options(self):
+        provider = VLLMProvider(
+            model_id="Qwen/Qwen3.5-9B",
+            family="qwen",
+            extra_llm_kwargs={"dtype": "float16"},
+        )
+
+        with patch.dict(sys.modules, {"vllm": _fake_vllm_module()}):
+            with self.assertRaisesRegex(ValueError, "dtype"):
+                provider._load_runtime()
+
+    def test_metal_memory_fraction_sets_environment(self):
+        with patch.dict(os.environ, {}, clear=True), patch.dict(sys.modules, {"vllm": _fake_vllm_module()}):
+            VLLMProvider(
+                model_id="Qwen/Qwen3.5-9B",
+                family="qwen",
+                metal_memory_fraction="auto",
+            )._load_runtime()
+            self.assertEqual(os.environ["VLLM_METAL_MEMORY_FRACTION"], "auto")
+
+        with patch.dict(os.environ, {}, clear=True), patch.dict(sys.modules, {"vllm": _fake_vllm_module()}):
+            VLLMProvider(
+                model_id="Qwen/Qwen3.5-9B",
+                family="qwen",
+                metal_memory_fraction=0.7,
+            )._load_runtime()
+            self.assertEqual(os.environ["VLLM_METAL_MEMORY_FRACTION"], "0.7")
+
+    def test_invalid_metal_memory_fraction_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "metal_memory_fraction"):
+            VLLMProvider(model_id="Qwen/Qwen3.5-9B", family="qwen", metal_memory_fraction=1.5)
+        with self.assertRaisesRegex(ValueError, "metal_memory_fraction"):
+            VLLMProvider(model_id="Qwen/Qwen3.5-9B", family="qwen", metal_memory_fraction="fast")
+
+    def test_macos_arm64_import_error_mentions_vllm_metal(self):
+        provider = VLLMProvider(model_id="Qwen/Qwen3.5-9B", family="qwen")
+
+        with patch("tokenrail.providers.vllm._is_macos_arm64", return_value=True):
+            with patch.dict(sys.modules, {"vllm": None}):
+                with self.assertRaises(ImportError) as raised:
+                    provider._load_runtime()
+        message = str(raised.exception)
+        self.assertIn("vllm-metal", message)
+        self.assertIn("Python 3.12", message)
+        self.assertIn("tokenrail[vllm]", message)
+        self.assertIn("raw.githubusercontent.com/vllm-project/vllm-metal", message)
 
     def test_qwen_prompt_passes_enable_thinking_to_chat_template(self):
         tokenizer = _FakeTokenizer()

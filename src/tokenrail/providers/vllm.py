@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
+import platform
 import re
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -111,6 +114,45 @@ FAMILY_STRATEGIES: dict[str, FamilyStrategy] = {
 }
 
 
+def _is_macos_arm64() -> bool:
+    return sys.platform == "darwin" and platform.machine() == "arm64"
+
+
+def _normalize_metal_memory_fraction(value: str | float | int | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if value == "auto":
+            return value
+        try:
+            numeric = float(value)
+        except ValueError as exc:
+            raise ValueError("metal_memory_fraction must be 'auto' or a number in (0, 1]") from exc
+    else:
+        numeric = float(value)
+    if not 0 < numeric <= 1:
+        raise ValueError("metal_memory_fraction must be 'auto' or a number in (0, 1]")
+    return str(value)
+
+
+def _missing_vllm_message() -> str:
+    if not _is_macos_arm64():
+        return "vllm is required for RailClient.vllm(). Install it with `uv add 'tokenrail[vllm]'`."
+    if sys.version_info < (3, 12):
+        return (
+            "vllm-metal on Apple Silicon requires Python 3.12 or newer. "
+            "Create a Python 3.12+ environment, then install tokenrail with `uv add 'tokenrail[vllm]'`. "
+            "If needed, install vLLM-Metal with "
+            "`curl -fsSL https://raw.githubusercontent.com/vllm-project/vllm-metal/main/install.sh | bash`."
+        )
+    return (
+        "vllm-metal is required for RailClient.vllm() on Apple Silicon. "
+        "Use Python 3.12 or newer, then install tokenrail with `uv add 'tokenrail[vllm]'`, "
+        "or install vLLM-Metal with "
+        "`curl -fsSL https://raw.githubusercontent.com/vllm-project/vllm-metal/main/install.sh | bash`."
+    )
+
+
 class VLLMProvider(BaseProvider):
     name = "vllm"
     supports_batching = True
@@ -128,6 +170,9 @@ class VLLMProvider(BaseProvider):
         trust_remote_code: bool = False,
         enable_prefix_caching: bool = False,
         seed: int | None = None,
+        device: str | None = None,
+        metal_memory_fraction: str | float | None = None,
+        extra_llm_kwargs: dict[str, Any] | None = None,
         llm: Any | None = None,
         tokenizer: Any | None = None,
         sampling_params_cls: Any | None = None,
@@ -145,6 +190,9 @@ class VLLMProvider(BaseProvider):
         self.trust_remote_code = trust_remote_code
         self.enable_prefix_caching = enable_prefix_caching
         self.seed = seed
+        self.device = device
+        self.metal_memory_fraction = _normalize_metal_memory_fraction(metal_memory_fraction)
+        self.extra_llm_kwargs = dict(extra_llm_kwargs or {})
         self._llm = llm
         self._tokenizer = tokenizer
         self._sampling_params_cls = sampling_params_cls
@@ -160,10 +208,13 @@ class VLLMProvider(BaseProvider):
         if self._llm is not None and self._tokenizer is not None and self._sampling_params_cls is not None:
             return self._llm, self._tokenizer, self._sampling_params_cls
 
+        if self.metal_memory_fraction is not None:
+            os.environ["VLLM_METAL_MEMORY_FRACTION"] = self.metal_memory_fraction
+
         try:
             from vllm import LLM, SamplingParams
         except ImportError as exc:
-            raise ImportError("vllm is required for RailClient.vllm(). Install it with `uv add 'tokenrail[vllm]'`.") from exc
+            raise ImportError(_missing_vllm_message()) from exc
 
         if self._llm is None:
             llm_kwargs: JsonDict = {
@@ -173,12 +224,19 @@ class VLLMProvider(BaseProvider):
                 "trust_remote_code": self.trust_remote_code,
                 "enable_prefix_caching": self.enable_prefix_caching,
             }
+            if self.device is not None:
+                llm_kwargs["device"] = self.device
             if self.max_model_len is not None:
                 llm_kwargs["max_model_len"] = self.max_model_len
             if self.quantization is not None:
                 llm_kwargs["quantization"] = self.quantization
             if self.seed is not None:
                 llm_kwargs["seed"] = self.seed
+            collisions = sorted(set(llm_kwargs).intersection(self.extra_llm_kwargs))
+            if collisions:
+                names = ", ".join(collisions)
+                raise ValueError(f"extra_llm_kwargs cannot override explicit VLLMProvider options: {names}")
+            llm_kwargs.update(self.extra_llm_kwargs)
             self._llm = LLM(**llm_kwargs)
 
         if self._tokenizer is None:

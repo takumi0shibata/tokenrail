@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.1.3" }
+tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.2.0" }
 ```
 
 Then sync:
@@ -36,8 +36,10 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.1.3" }
+tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.2.0" }
 ```
+
+On Linux this installs vLLM. On Apple Silicon macOS, use Python 3.12 or newer; the same extra installs vLLM-Metal, the vLLM hardware plugin for Metal/MLX acceleration.
 
 Set your API key in the consuming project before using OpenAI:
 
@@ -120,6 +122,23 @@ print(response.output_text)
 print(response.usage.to_dict())
 ```
 
+For Apple Silicon, use vLLM-Metal with an MLX-optimized text model:
+
+```python
+from tokenrail import RailClient
+
+client = RailClient.vllm(
+    model_id="mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+    family="qwen",
+    dtype="auto",
+    max_model_len=2048,
+    metal_memory_fraction="auto",
+    extra_llm_kwargs={"max_num_seqs": 8},
+)
+```
+
+`gpu_memory_utilization` is the CUDA vLLM memory knob. On Apple Silicon, use `metal_memory_fraction` or set `VLLM_METAL_MEMORY_FRACTION` directly.
+
 ## Local vLLM batch execution
 
 ```python
@@ -175,6 +194,7 @@ Current built-in families:
 
 ## Notes
 
+- Apple Silicon GPU support depends on vLLM-Metal: see the vLLM [Apple Silicon GPU installation guide](https://docs.vllm.ai/en/latest/getting_started/installation/gpu/), [CPU Apple Silicon notes](https://docs.vllm.ai/en/latest/getting_started/installation/cpu/), [vLLM-Metal configuration](https://docs.vllm.ai/projects/vllm-metal/en/latest/configuration/), and [supported models](https://docs.vllm.ai/projects/vllm-metal/en/latest/supported_models/).
 - OpenAI cost allocation is inferred from `billing.payer` in the response body. When `payer == "openai"`, the nominal request cost is counted as OpenAI-covered rather than developer-billed.
 - v1 local vLLM support is text-only. Multimodal local inputs can be added behind the same provider interface later.
 - `reasoning_effort` is gated to `gpt-5` / `o`-series style models in the checked-in capability registry.

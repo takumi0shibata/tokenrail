@@ -56,6 +56,9 @@ class RailClient:
         trust_remote_code: bool = False,
         enable_prefix_caching: bool = False,
         seed: int | None = None,
+        device: str | None = None,
+        metal_memory_fraction: str | float | None = None,
+        extra_llm_kwargs: dict[str, Any] | None = None,
     ) -> "RailClient":
         provider = VLLMProvider(
             model_id=model_id,
@@ -68,5 +71,8 @@ class RailClient:
             trust_remote_code=trust_remote_code,
             enable_prefix_caching=enable_prefix_caching,
             seed=seed,
+            device=device,
+            metal_memory_fraction=metal_memory_fraction,
+            extra_llm_kwargs=extra_llm_kwargs,
         )
         return cls(provider=provider)
