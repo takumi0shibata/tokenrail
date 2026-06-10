@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import tokenrail
+import tokenrail.providers as providers
 from tokenrail.catalog import get_model_capabilities, get_model_pricing
 from tokenrail.client import RailClient
 from tokenrail.providers.openai import OpenAIProvider
@@ -36,6 +38,16 @@ class _BuiltClient:
 
 
 class OpenAIProviderTests(unittest.TestCase):
+    def test_package_exports_openai_only_provider_symbols(self):
+        self.assertIn("OpenAIProvider", tokenrail.__all__)
+        self.assertNotIn("VLLMProvider", tokenrail.__all__)
+        self.assertNotIn("VLLMServerProvider", tokenrail.__all__)
+        self.assertFalse(hasattr(tokenrail, "VLLMProvider"))
+        self.assertFalse(hasattr(tokenrail, "VLLMServerProvider"))
+        self.assertEqual(providers.__all__, ["OpenAIProvider"])
+        self.assertFalse(hasattr(RailClient, "vllm"))
+        self.assertFalse(hasattr(RailClient, "vllm_server"))
+
     def test_base_url_is_forwarded_when_building_client(self):
         captured = {}
 

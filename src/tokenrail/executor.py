@@ -79,29 +79,6 @@ class BatchExecutor:
                 self._save(response)
                 self.monitor.record(response)
 
-    def _run_batched(self, items: list[BatchItem]) -> None:
-        provider = self.client.provider
-        requests = [self._request_kwargs(item) for item in items]
-        try:
-            responses = provider.create_many(requests)
-            response_by_id = {response.id: response for response in responses}
-            for item in items:
-                response = response_by_id.get(item.id)
-                if response is None:
-                    response = _error_response(
-                        item.id,
-                        model=str(requests[0].get("model") or getattr(provider, "model_id", "unknown")),
-                        provider=provider.name,
-                        error=RuntimeError("provider returned no response"),
-                    )
-                self._save(response)
-                self.monitor.record(response)
-        except Exception:
-            for item in items:
-                response = self._call_single(item)
-                self._save(response)
-                self.monitor.record(response)
-
     def run(self, items: Sequence[BatchItem] | dict[str, Any]) -> StatsSnapshot:
         self.monitor.reset()
         normalized_items = self._prepare_items(items)
@@ -114,9 +91,6 @@ class BatchExecutor:
             skipped_requests=skipped,
         )
 
-        if getattr(self.client.provider, "supports_batching", False):
-            self._run_batched(todo)
-        else:
-            self._run_threaded(todo)
+        self._run_threaded(todo)
 
         return self.monitor.finalize(total_requests=len(normalized_items), skipped_requests=skipped)

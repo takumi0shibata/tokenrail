@@ -42,7 +42,6 @@ class _FakeResponsesNamespace:
 
 class _FakeProvider:
     name = "fake"
-    supports_batching = False
 
     def __init__(self):
         self.responses = _FakeResponsesNamespace()

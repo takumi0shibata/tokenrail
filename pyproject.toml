@@ -1,22 +1,12 @@
 [project]
 name = "tokenrail"
 version = "0.2.1"
-description = "Thin client and batch execution helpers for OpenAI and local LLM workloads."
+description = "Thin client and batch execution helpers for OpenAI Responses API workloads."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "openai>=1.108.0",
 ]
-
-[project.optional-dependencies]
-vllm = [
-    "vllm>=0.19.1; sys_platform != 'darwin' or platform_machine != 'arm64'",
-    "transformers>=5.5.0",
-]
-
-[project.scripts]
-sample = "tokenrail.sample_cli:main"
-tokenrail-sample = "tokenrail.sample_cli:main"
 
 [build-system]
 requires = ["hatchling>=1.27.0"]
@@ -27,5 +17,6 @@ packages = ["src/tokenrail"]
 
 [dependency-groups]
 dev = [
+    "pytest>=8.0.0",
     "python-dotenv>=1.2.2",
 ]
