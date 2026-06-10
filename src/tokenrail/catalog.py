@@ -60,6 +60,7 @@ _DEFAULT_CAPABILITIES = ModelCapabilities(
 )
 
 _PRICING_RULES: list[tuple[tuple[str, ...], ModelPricing]] = [
+    (("gpt-5.5",), ModelPricing(Decimal("5.00"), Decimal("0.50"), Decimal("30.00"))),
     (("gpt-5.4-mini",), ModelPricing(Decimal("0.750"), Decimal("0.075"), Decimal("4.500"))),
     (("gpt-5.4-nano",), ModelPricing(Decimal("0.20"), Decimal("0.02"), Decimal("1.25"))),
     (("gpt-5.4",), ModelPricing(Decimal("2.50"), Decimal("0.25"), Decimal("15.00"))),
