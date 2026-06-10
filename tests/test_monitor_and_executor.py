@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -53,6 +54,53 @@ class _FakeProvider:
 class _FakeClient:
     def __init__(self):
         self.provider = _FakeProvider()
+        self.responses = self.provider.responses
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class _TimedResponsesNamespace:
+    def __init__(self, clock: _Clock, total_tokens: int = 6):
+        self.clock = clock
+        self.total_tokens = total_tokens
+        self.calls = []
+        self._lock = threading.Lock()
+
+    def create(self, **kwargs):
+        with self._lock:
+            self.calls.append((kwargs["request_id"], self.clock.time()))
+        return NormalizedResponse(
+            id=kwargs["request_id"],
+            model=kwargs["model"],
+            provider="fake",
+            output_text=f"ok:{kwargs['input']}",
+            raw_response={"id": kwargs["request_id"]},
+            usage=UsageBreakdown(total_tokens=self.total_tokens),
+            timing=TimingBreakdown(started_at=0.0, completed_at=0.0, latency_seconds=0.0),
+        )
+
+
+class _TimedProvider:
+    name = "fake"
+
+    def __init__(self, clock: _Clock, total_tokens: int = 6):
+        self.responses = _TimedResponsesNamespace(clock, total_tokens=total_tokens)
+
+
+class _TimedClient:
+    def __init__(self, clock: _Clock, total_tokens: int = 6):
+        self.provider = _TimedProvider(clock, total_tokens=total_tokens)
         self.responses = self.provider.responses
 
 
@@ -158,6 +206,50 @@ class MonitorAndExecutorTests(unittest.TestCase):
             self.assertEqual(second.remaining_requests, 0)
             self.assertEqual(second.eta_seconds, 0.0)
             self.assertIsNotNone(second.estimated_finished_at)
+
+    def test_batch_executor_limits_submits_by_rpm(self):
+        clock = _Clock()
+        client = _TimedClient(clock)
+        executor = BatchExecutor(
+            client=client,
+            max_workers=4,
+            max_rpm=2,
+            monitor=RollingMetricsMonitor(printer=None),
+        )
+        executor._time_fn = clock.time
+        executor._sleep_fn = clock.sleep
+        items = [
+            BatchItem(id=str(i), request_kwargs={"model": "gpt-5.4-mini", "input": str(i)})
+            for i in range(4)
+        ]
+
+        executor.run(items)
+
+        call_times = sorted(call_time for _, call_time in client.responses.calls)
+        self.assertEqual(call_times[:2], [0.0, 0.0])
+        self.assertEqual(call_times[2:], [60.0, 60.0])
+        self.assertEqual(clock.sleeps, [60.0])
+
+    def test_batch_executor_limits_submits_by_tpm_estimate(self):
+        clock = _Clock()
+        client = _TimedClient(clock, total_tokens=6)
+        executor = BatchExecutor(
+            client=client,
+            max_workers=4,
+            max_tpm=10,
+            monitor=RollingMetricsMonitor(printer=None),
+        )
+        executor._time_fn = clock.time
+        executor._sleep_fn = clock.sleep
+        items = [
+            BatchItem(id=str(i), request_kwargs={"model": "gpt-5.4-mini", "input": str(i)})
+            for i in range(3)
+        ]
+
+        executor.run(items)
+
+        self.assertEqual([call_time for _, call_time in client.responses.calls], [0.0, 60.0, 120.0])
+        self.assertEqual(clock.sleeps, [60.0, 60.0])
 
     def test_batch_items_from_queries(self):
         items = batch_items_from_queries({"1": [{"role": "user", "content": "hello"}]}, model="gpt-5.4-mini")

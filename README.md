@@ -70,6 +70,8 @@ per_request_sink = PerRequestJsonSink("out/")
 executor = BatchExecutor(
     client=client,
     max_workers=16,
+    max_rpm=500,
+    max_tpm=200_000,
     sinks=[result_sink, per_request_sink],
     monitor=RollingMetricsMonitor(),
 )
@@ -79,6 +81,7 @@ print(stats.to_dict())
 ```
 
 `max_retries` configures the OpenAI Python SDK client's built-in retry behavior. `tokenrail` does not add its own retry loop on top.
+`max_rpm` and `max_tpm` are optional client-side submit limits. When a limit is set, `BatchExecutor` waits before submitting more work instead of raising its effective concurrency above the configured rate.
 
 ## Resume Behavior
 
