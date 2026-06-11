@@ -19,6 +19,9 @@ versioning: `RailClient`, `BatchExecutor`, `batch_items_from_queries`,
 - Docstrings across the public API.
 - Complete packaging metadata (license, classifiers, project URLs).
 - CI test workflow across Python 3.10–3.14.
+- First release published to [PyPI](https://pypi.org/project/tokenrail/);
+  releases are published automatically from `v*` tags via PyPI Trusted
+  Publishing.
 
 ### Changed
 

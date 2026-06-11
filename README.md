@@ -1,7 +1,8 @@
 # tokenrail
 
 [![CI](https://github.com/takumi0shibata/tokenrail/actions/workflows/ci.yml/badge.svg)](https://github.com/takumi0shibata/tokenrail/actions/workflows/ci.yml)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/takumi0shibata/tokenrail)
+[![PyPI](https://img.shields.io/pypi/v/tokenrail)](https://pypi.org/project/tokenrail/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/tokenrail/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 `tokenrail` is a small Python library for running OpenAI Responses API jobs with a `client.responses.create(...)`-style surface.
@@ -17,22 +18,17 @@ Fully typed (PEP 561), supports Python 3.10+.
 
 ## Installation
 
-Add `tokenrail` as a Git dependency from your own project:
-
-```toml
-[project]
-dependencies = [
-    "tokenrail",
-]
-
-[tool.uv.sources]
-tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v1.0.0" }
+```bash
+uv add tokenrail
+# or
+pip install tokenrail
 ```
 
-Then sync:
+To track an unreleased revision instead, depend on the Git repository directly:
 
-```bash
-uv sync
+```toml
+[tool.uv.sources]
+tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v1.0.0" }
 ```
 
 Set your OpenAI API key in the consuming project before use:
