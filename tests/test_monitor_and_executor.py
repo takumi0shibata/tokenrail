@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import threading
 import tempfile
+import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from tokenrail.client import RailClient
 from tokenrail.executor import BatchExecutor, BatchItem, batch_items_from_queries
 from tokenrail.monitor import RollingMetricsMonitor
 from tokenrail.sinks import ResultsJsonlSink
@@ -114,7 +113,9 @@ class MonitorAndExecutorTests(unittest.TestCase):
             provider="openai",
             output_text="hi",
             raw_response={},
-            usage=UsageBreakdown(input_tokens=10, cached_tokens=2, output_tokens=4, reasoning_tokens=1, total_tokens=14),
+            usage=UsageBreakdown(
+                input_tokens=10, cached_tokens=2, output_tokens=4, reasoning_tokens=1, total_tokens=14
+            ),
             billing={"payer": "openai"},
             cost=CostBreakdown(nominal_usd=0.5, developer_usd=0.0, openai_usd=0.5, payer="openai"),
             timing=TimingBreakdown(started_at=0.0, completed_at=1.0, latency_seconds=1.0),
@@ -184,7 +185,9 @@ class MonitorAndExecutorTests(unittest.TestCase):
     def test_batch_executor_handles_success_failure_and_skip(self):
         with tempfile.TemporaryDirectory() as tmp:
             sink = ResultsJsonlSink(Path(tmp) / "results.jsonl")
-            executor = BatchExecutor(client=_FakeClient(), max_workers=4, sinks=[sink], monitor=RollingMetricsMonitor(printer=None))
+            executor = BatchExecutor(
+                client=_FakeClient(), max_workers=4, sinks=[sink], monitor=RollingMetricsMonitor(printer=None)
+            )
             items = [
                 BatchItem(id="a", request_kwargs={"model": "gpt-5.4-mini", "input": "ok"}),
                 BatchItem(id="b", request_kwargs={"model": "gpt-5.4-mini", "input": "boom"}),

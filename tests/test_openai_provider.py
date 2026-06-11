@@ -37,6 +37,14 @@ class _BuiltClient:
         self.responses = _FakeResponsesAPI([])
 
 
+class PackageMetadataTests(unittest.TestCase):
+    def test_version_matches_installed_metadata(self):
+        from importlib.metadata import version
+
+        self.assertEqual(tokenrail.__version__, version("tokenrail"))
+        self.assertIn("__version__", tokenrail.__all__)
+
+
 class OpenAIProviderTests(unittest.TestCase):
     def test_package_exports_openai_only_provider_symbols(self):
         self.assertIn("OpenAIProvider", tokenrail.__all__)

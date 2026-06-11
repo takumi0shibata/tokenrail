@@ -36,6 +36,13 @@ def _serialize_response(response: Any) -> JsonDict:
 
 
 class OpenAIProvider(BaseProvider):
+    """Executes requests against the OpenAI Responses API.
+
+    Validates request parameters against the model capability registry,
+    normalizes the response (output text, usage, billing), and attaches a cost
+    estimate from the checked-in pricing table.
+    """
+
     name = "openai"
 
     def __init__(

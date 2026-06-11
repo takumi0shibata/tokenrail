@@ -3,12 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-
 JsonDict = dict[str, Any]
 
 
 @dataclass(slots=True)
 class UsageBreakdown:
+    """Token usage for a single request, including cached and reasoning tokens."""
+
     input_tokens: int = 0
     cached_tokens: int = 0
     output_tokens: int = 0
@@ -16,11 +17,11 @@ class UsageBreakdown:
     total_tokens: int = 0
 
     @classmethod
-    def empty(cls) -> "UsageBreakdown":
+    def empty(cls) -> UsageBreakdown:
         return cls()
 
     @classmethod
-    def from_dict(cls, raw: JsonDict | None) -> "UsageBreakdown":
+    def from_dict(cls, raw: JsonDict | None) -> UsageBreakdown:
         raw = raw or {}
         input_details = raw.get("input_tokens_details") or {}
         output_details = raw.get("output_tokens_details") or {}
@@ -32,7 +33,7 @@ class UsageBreakdown:
             total_tokens=int(raw.get("total_tokens") or 0),
         )
 
-    def finalized(self) -> "UsageBreakdown":
+    def finalized(self) -> UsageBreakdown:
         total = self.total_tokens or (self.input_tokens + self.output_tokens)
         return UsageBreakdown(
             input_tokens=self.input_tokens,
@@ -54,13 +55,15 @@ class UsageBreakdown:
 
 @dataclass(slots=True)
 class CostBreakdown:
+    """USD cost of a request split by payer (developer vs. OpenAI-covered)."""
+
     nominal_usd: float = 0.0
     developer_usd: float = 0.0
     openai_usd: float = 0.0
     payer: str | None = None
 
     @classmethod
-    def none(cls, payer: str | None = None) -> "CostBreakdown":
+    def none(cls, payer: str | None = None) -> CostBreakdown:
         return cls(payer=payer)
 
     def to_dict(self) -> JsonDict:
@@ -88,6 +91,12 @@ class TimingBreakdown:
 
 @dataclass(slots=True)
 class NormalizedResponse:
+    """Provider-agnostic result of a single request.
+
+    ``error`` is set (and ``output_text`` is ``None``) when the request failed;
+    ``raw_response`` carries the unmodified provider payload when available.
+    """
+
     id: str
     model: str
     provider: str
@@ -118,6 +127,8 @@ class NormalizedResponse:
 
 @dataclass(slots=True)
 class BatchItem:
+    """One unit of batch work: a stable id plus ``responses.create`` kwargs."""
+
     id: str
     request_kwargs: JsonDict
 
@@ -154,6 +165,8 @@ class ModelStats:
 
 @dataclass(slots=True)
 class StatsSnapshot:
+    """Point-in-time view of batch progress, usage, cost, and ETA."""
+
     total_requests: int = 0
     todo_requests: int = 0
     processed_requests: int = 0

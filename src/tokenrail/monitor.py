@@ -3,13 +3,20 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from datetime import datetime
-from typing import Callable
 
 from .types import ModelStats, NormalizedResponse, StatsSnapshot
 
 
 class RollingMetricsMonitor:
+    """Thread-safe aggregator of per-request usage, cost, and throughput metrics.
+
+    Tracks totals and per-model breakdowns, rolling RPM/TPM over
+    ``window_seconds``, and ETA estimates. Each :meth:`record` call prints a
+    one-line progress update via ``printer`` (pass ``printer=None`` to disable).
+    """
+
     def __init__(
         self,
         *,
@@ -103,6 +110,7 @@ class RollingMetricsMonitor:
         )
 
     def record(self, response: NormalizedResponse) -> StatsSnapshot:
+        """Fold ``response`` into the running totals and return a snapshot copy."""
         with self._lock:
             now = time.time()
             total_tokens = response.usage.total_tokens or (response.usage.input_tokens + response.usage.output_tokens)
@@ -152,6 +160,7 @@ class RollingMetricsMonitor:
         return snapshot
 
     def snapshot(self) -> StatsSnapshot:
+        """Return a copy of the current stats without recording anything."""
         with self._lock:
             return self._copy_snapshot_unlocked()
 

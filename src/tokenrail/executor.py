@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from typing import Any, Callable, Sequence
+from typing import Any
 
 from .monitor import RollingMetricsMonitor
 from .sinks import ResultSink
@@ -11,6 +12,11 @@ from .types import BatchItem, NormalizedResponse, StatsSnapshot, TimingBreakdown
 
 
 def batch_items_from_queries(queries: dict[str, Any], **shared_request_kwargs: Any) -> list[BatchItem]:
+    """Build :class:`BatchItem` objects from an ``{id: input}`` mapping.
+
+    Each value becomes the request ``input``; ``shared_request_kwargs`` (e.g.
+    ``model``, ``reasoning_effort``) are applied to every item.
+    """
     return [
         BatchItem(id=str(item_id), request_kwargs={"input": messages, **shared_request_kwargs})
         for item_id, messages in queries.items()
@@ -95,7 +101,10 @@ class _SubmitRateLimiter:
         if self.max_rpm is not None and len(self._submitted_at) >= self.max_rpm:
             waits.append(self._submitted_at[0] + self.window_seconds - now)
         if self.max_tpm is not None and self._completed_events:
-            if self._rolling_completed_tokens() + self._inflight_estimated_tokens + self._estimated_next_tokens() > self.max_tpm:
+            projected = (
+                self._rolling_completed_tokens() + self._inflight_estimated_tokens + self._estimated_next_tokens()
+            )
+            if projected > self.max_tpm:
                 waits.append(self._completed_events[0][0] + self.window_seconds - now)
         if waits:
             return max(min(waits), 0.0)
@@ -127,6 +136,16 @@ class _SubmitRateLimiter:
 
 
 class BatchExecutor:
+    """Thread-based batch runner for :class:`~tokenrail.client.RailClient` requests.
+
+    Submits items to a thread pool while honoring optional client-side
+    ``max_rpm`` / ``max_tpm`` submit limits, writes each result to the
+    configured sinks, and records metrics on the monitor. Items whose ids are
+    already present in the first sink are skipped, which makes re-runs
+    resumable. Request errors are captured as error responses rather than
+    raised, so a single failing item does not abort the batch.
+    """
+
     def __init__(
         self,
         *,
@@ -209,6 +228,8 @@ class BatchExecutor:
                     self.monitor.record(response)
 
     def run(self, items: Sequence[BatchItem] | dict[str, Any]) -> StatsSnapshot:
+        """Execute ``items`` (a sequence of :class:`BatchItem` or an ``{id: input}``
+        dict) and return the final :class:`~tokenrail.types.StatsSnapshot`."""
         self.monitor.reset()
         normalized_items = self._prepare_items(items)
         done_ids = self._load_done_ids()

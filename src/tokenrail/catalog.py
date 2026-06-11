@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Iterable
+from typing import TypeVar
 
 from .types import CostBreakdown, UsageBreakdown
+
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,8 +93,8 @@ def _is_delimited_match(model: str, candidate: str, start: int, end: int) -> boo
     return before_ok and after_ok
 
 
-def _match_rule(model: str, rules: Iterable[tuple[tuple[str, ...], object]]) -> object | None:
-    matches: list[tuple[int, int, object]] = []
+def _match_rule(model: str, rules: Iterable[tuple[tuple[str, ...], _T]]) -> _T | None:
+    matches: list[tuple[int, int, _T]] = []
     for rule_index, (prefixes, payload) in enumerate(rules):
         for prefix in prefixes:
             start = model.find(prefix)
@@ -110,16 +113,21 @@ def _match_rule(model: str, rules: Iterable[tuple[tuple[str, ...], object]]) -> 
 
 
 def get_model_capabilities(model: str) -> ModelCapabilities:
+    """Return the request-parameter capabilities for ``model``.
+
+    Matching is delimiter-aware substring matching against the checked-in
+    capability registry; unknown models fall back to a conservative default.
+    """
     return _match_rule(model, _CAPABILITY_RULES) or _DEFAULT_CAPABILITIES
 
 
 def get_model_pricing(model: str, service_tier: str = "default") -> ModelPricing | None:
-    pricing = _match_rule(model, _PRICING_RULES)
-    if pricing is None:
-        return None
-    if pricing.service_tier == service_tier or service_tier in {"default", "auto"}:
-        return pricing
-    return pricing
+    """Return per-million-token pricing for ``model``, or ``None`` if unknown.
+
+    The checked-in registry only carries default-tier prices; for other service
+    tiers the default-tier price is returned as an approximation.
+    """
+    return _match_rule(model, _PRICING_RULES)
 
 
 def calculate_cost(
@@ -128,6 +136,11 @@ def calculate_cost(
     payer: str | None,
     service_tier: str = "default",
 ) -> CostBreakdown | None:
+    """Compute the nominal USD cost of ``usage`` and attribute it to a payer.
+
+    Returns ``None`` when the model has no pricing entry. When ``payer`` is
+    ``"openai"`` the cost is attributed to OpenAI instead of the developer.
+    """
     pricing = get_model_pricing(model, service_tier=service_tier)
     if pricing is None:
         return None

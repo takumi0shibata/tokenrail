@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import threading
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from .types import JsonDict, NormalizedResponse
 
 
 def default_projector(response: NormalizedResponse) -> JsonDict:
+    """Default JSONL record shape: id, model, output text, usage, cost, error."""
     return {
         "id": response.id,
         "model": response.model,
@@ -23,16 +24,26 @@ def default_projector(response: NormalizedResponse) -> JsonDict:
 
 
 class ResultSink(ABC):
+    """Destination for batch results; also provides done-ids for resume."""
+
     @abstractmethod
     def save(self, response: NormalizedResponse) -> None:
+        """Persist a single response. Must be safe to call from multiple threads."""
         raise NotImplementedError
 
     @abstractmethod
     def load_done_ids(self) -> set[str]:
+        """Return the ids already persisted, used to skip work on re-runs."""
         raise NotImplementedError
 
 
 class PerRequestJsonSink(ResultSink):
+    """Writes one ``<id>.json`` file per response into ``output_dir``.
+
+    Stores the raw provider response when available, otherwise the normalized
+    response dict.
+    """
+
     def __init__(self, output_dir: str | Path) -> None:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -49,6 +60,12 @@ class PerRequestJsonSink(ResultSink):
 
 
 class ResultsJsonlSink(ResultSink):
+    """Appends one JSON line per response to ``path``.
+
+    ``projector`` maps a :class:`~tokenrail.types.NormalizedResponse` to the
+    record to write; it must include an ``"id"`` key for resume to work.
+    """
+
     def __init__(
         self,
         path: str | Path,

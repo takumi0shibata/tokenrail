@@ -1,16 +1,23 @@
 # tokenrail
 
+[![CI](https://github.com/takumi0shibata/tokenrail/actions/workflows/ci.yml/badge.svg)](https://github.com/takumi0shibata/tokenrail/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/takumi0shibata/tokenrail)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 `tokenrail` is a small Python library for running OpenAI Responses API jobs with a `client.responses.create(...)`-style surface.
 
 It focuses on:
 
 - thread-based OpenAI batch execution
-- per-model token / TPM / RPM / cost monitoring
+- client-side RPM / TPM submit throttling
+- per-model token / cost monitoring with ETA progress reporting
 - resumable JSONL and per-request result writing
 
-## Install From GitHub With uv
+Fully typed (PEP 561), supports Python 3.10+.
 
-Add `tokenrail` as a Git dependency from your own project.
+## Installation
+
+Add `tokenrail` as a Git dependency from your own project:
 
 ```toml
 [project]
@@ -19,7 +26,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v0.2.1" }
+tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v1.0.0" }
 ```
 
 Then sync:
@@ -34,7 +41,7 @@ Set your OpenAI API key in the consuming project before use:
 export OPENAI_API_KEY=...
 ```
 
-## OpenAI usage
+## Quick start
 
 ```python
 from tokenrail import BatchExecutor, ResultsJsonlSink, PerRequestJsonSink, RailClient, RollingMetricsMonitor
@@ -80,15 +87,33 @@ stats = executor.run(items)
 print(stats.to_dict())
 ```
 
-`max_retries` configures the OpenAI Python SDK client's built-in retry behavior. `tokenrail` does not add its own retry loop on top.
-`max_rpm` and `max_tpm` are optional client-side submit limits. When a limit is set, `BatchExecutor` waits before submitting more work instead of raising its effective concurrency above the configured rate.
+## Configuration notes
 
-## Resume Behavior
+- `max_retries` configures the OpenAI Python SDK client's built-in retry behavior. `tokenrail` does not add its own retry loop on top.
+- `max_rpm` and `max_tpm` are optional client-side submit limits. When a limit is set, `BatchExecutor` waits before submitting more work instead of raising its effective concurrency above the configured rate.
+- Request failures are captured as error records (written to sinks and counted in stats) rather than raised, so one failing item does not abort the batch.
+- `base_url` is passed through to the OpenAI Python SDK for callers that need an SDK-level custom endpoint.
+
+## Resume behavior
 
 `BatchExecutor` reads completed ids from the first configured sink before it starts. Re-running the same job with the same output path skips records that are already present, then writes only the remaining requests.
 
-## Notes
+If you use a custom `projector` with `ResultsJsonlSink`, make sure it keeps an `"id"` field — resume relies on it.
 
+## Cost tracking
+
+- Costs are estimated from a checked-in per-model pricing table (`tokenrail.catalog`). Models without a pricing entry get `cost=None`; prices may lag behind OpenAI's official pricing page, which is always authoritative.
 - OpenAI cost allocation is inferred from `billing.payer` in the response body. When `payer == "openai"`, the nominal request cost is counted as OpenAI-covered rather than developer-billed.
 - `reasoning_effort` is gated to `gpt-5` / `o`-series style models in the checked-in capability registry.
-- `base_url` is passed through to the OpenAI Python SDK for callers that need an SDK-level custom endpoint.
+
+## Development
+
+```bash
+uv sync
+uv run pytest
+uv run ruff check src tests
+```
+
+## License
+
+[MIT](LICENSE)

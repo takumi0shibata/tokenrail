@@ -16,6 +16,13 @@ class _ResponsesNamespace:
 
 
 class RailClient:
+    """Provider-agnostic client with a ``client.responses.create(...)`` surface.
+
+    Wraps a :class:`~tokenrail.providers.base.BaseProvider` and exposes it through
+    a ``responses`` namespace that mirrors the OpenAI SDK call shape while
+    returning :class:`~tokenrail.types.NormalizedResponse` objects.
+    """
+
     def __init__(self, provider: BaseProvider) -> None:
         self.provider = provider
         self.responses = _ResponsesNamespace(provider)
@@ -30,7 +37,13 @@ class RailClient:
         base_url: str | None = None,
         max_retries: int = 2,
         client: Any | None = None,
-    ) -> "RailClient":
+    ) -> RailClient:
+        """Build a :class:`RailClient` backed by the OpenAI Python SDK.
+
+        ``max_retries`` configures the SDK's built-in retry behavior; tokenrail
+        does not add its own retry loop. Pass ``client`` to inject a pre-built
+        (or fake) OpenAI client instead of constructing one.
+        """
         provider = OpenAIProvider(
             client=client,
             api_key=api_key,
