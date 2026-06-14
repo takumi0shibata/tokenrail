@@ -111,7 +111,6 @@ items = batch_items_from_queries(
     },
     model="gpt-5.4-mini-2026-03-17",
     reasoning_effort="medium",
-    verbosity="low",
     text_format=PaperSummary,
 )
 
@@ -131,7 +130,9 @@ print(stats.to_dict())
 
 Use `response_format={...}` with `client.responses.create(...)` when you want to
 provide a raw JSON Schema yourself. Use `text_format=YourModel` for Pydantic
-parsing; `response_format` and `text_format` cannot be used together.
+parsing; `response_format` and `text_format` cannot be used together. Do not set
+`verbosity` on structured output batches that use `text_format`, because the
+OpenAI SDK's `responses.parse(...)` path does not accept that combination.
 
 ## Configuration notes
 
