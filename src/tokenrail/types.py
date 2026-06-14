@@ -1,9 +1,26 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any
 
 JsonDict = dict[str, Any]
+
+
+def to_jsonable(value: Any) -> Any:
+    """Convert common structured-output objects to JSON-serializable values."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [to_jsonable(item) for item in value]
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if hasattr(value, "dict"):
+        return value.dict()
+    if is_dataclass(value) and not isinstance(value, type):
+        return to_jsonable(asdict(value))
+    return value
 
 
 @dataclass(slots=True)
@@ -102,6 +119,8 @@ class NormalizedResponse:
     provider: str
     output_text: str | None
     raw_response: JsonDict | None
+    output_parsed: Any | None = None
+    refusal: str | None = None
     usage: UsageBreakdown = field(default_factory=UsageBreakdown.empty)
     billing: JsonDict | None = None
     cost: CostBreakdown | None = None
@@ -115,6 +134,8 @@ class NormalizedResponse:
             "model": self.model,
             "provider": self.provider,
             "output_text": self.output_text,
+            "output_parsed": to_jsonable(self.output_parsed),
+            "refusal": self.refusal,
             "raw_response": self.raw_response,
             "usage": self.usage.finalized().to_dict(),
             "billing": self.billing,

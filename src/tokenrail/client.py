@@ -14,6 +14,9 @@ class _ResponsesNamespace:
     def create(self, **kwargs: Any) -> NormalizedResponse:
         return self._provider.create(**kwargs)
 
+    def parse(self, **kwargs: Any) -> NormalizedResponse:
+        return self._provider.parse(**kwargs)
+
 
 class RailClient:
     """Provider-agnostic client with a ``client.responses.create(...)`` surface.

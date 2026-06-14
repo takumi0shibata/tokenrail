@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
 
-from .types import JsonDict, NormalizedResponse
+from .types import JsonDict, NormalizedResponse, to_jsonable
 
 
 def default_projector(response: NormalizedResponse) -> JsonDict:
@@ -16,6 +16,8 @@ def default_projector(response: NormalizedResponse) -> JsonDict:
         "model": response.model,
         "provider": response.provider,
         "output_text": response.output_text,
+        "output_parsed": to_jsonable(response.output_parsed),
+        "refusal": response.refusal,
         "usage": response.usage.to_dict(),
         "billing": response.billing,
         "cost": response.cost.to_dict() if response.cost is not None else None,

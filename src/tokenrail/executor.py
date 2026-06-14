@@ -187,6 +187,8 @@ class BatchExecutor:
     def _call_single(self, item: BatchItem) -> NormalizedResponse:
         request_kwargs = self._request_kwargs(item)
         try:
+            if request_kwargs.get("text_format") is not None:
+                return self.client.responses.parse(**request_kwargs)
             return self.client.responses.create(**request_kwargs)
         except Exception as exc:
             model = str(request_kwargs.get("model") or getattr(self.client.provider, "model_id", "unknown"))

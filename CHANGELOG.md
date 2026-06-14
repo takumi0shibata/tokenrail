@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-06-14
+
+### Added
+
+- Structured output parsing for batch jobs. `BatchExecutor` now calls
+  `responses.parse(...)` automatically for items that include `text_format`.
+- `client.responses.parse(...)` and `OpenAIProvider.parse(...)`.
+- `NormalizedResponse.output_parsed` and `NormalizedResponse.refusal`.
+- Default JSONL result records now include `output_parsed` and `refusal`.
+- README example for Pydantic structured output batches.
+
+### Changed
+
+- `response_format` remains the low-level JSON Schema path for
+  `responses.create(...)`; `text_format` is the high-level Pydantic parsing path.
+  They are rejected when used together.
+
 ## [1.0.0] - 2026-06-11
 
 First stable release. The public API surface is now covered by semantic

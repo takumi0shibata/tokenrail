@@ -5,11 +5,12 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/tokenrail/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-`tokenrail` is a small Python library for running OpenAI Responses API jobs with a `client.responses.create(...)`-style surface.
+`tokenrail` is a small Python library for running OpenAI Responses API jobs with a `client.responses`-style surface.
 
 It focuses on:
 
 - thread-based OpenAI batch execution
+- structured output parsing for Pydantic models
 - client-side RPM / TPM submit throttling
 - per-model token / cost monitoring with ETA progress reporting
 - resumable JSONL and per-request result writing
@@ -28,7 +29,7 @@ To track an unreleased revision instead, depend on the Git repository directly:
 
 ```toml
 [tool.uv.sources]
-tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v1.0.0" }
+tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v1.1.0" }
 ```
 
 Set your OpenAI API key in the consuming project before use:
@@ -82,6 +83,55 @@ executor = BatchExecutor(
 stats = executor.run(items)
 print(stats.to_dict())
 ```
+
+## Structured output batches
+
+Pass a Pydantic model as `text_format` when building batch items. `BatchExecutor`
+will call `responses.parse(...)` for those items and store the validated object
+on `response.output_parsed`.
+
+```python
+from pydantic import BaseModel
+
+from tokenrail import BatchExecutor, RailClient, ResultsJsonlSink
+from tokenrail.executor import batch_items_from_queries
+
+
+class PaperSummary(BaseModel):
+    title: str
+    key_assumptions: list[str]
+
+
+client = RailClient.openai(max_retries=6)
+
+items = batch_items_from_queries(
+    {
+        "paper-1": [{"role": "user", "content": "Extract the title and assumptions from this paper: ..."}],
+        "paper-2": [{"role": "user", "content": "Extract the title and assumptions from this paper: ..."}],
+    },
+    model="gpt-5.4-mini-2026-03-17",
+    reasoning_effort="medium",
+    verbosity="low",
+    text_format=PaperSummary,
+)
+
+sink = ResultsJsonlSink(
+    "out/structured-results.jsonl",
+    projector=lambda response: {
+        "id": response.id,
+        "summary": response.output_parsed.model_dump(mode="json") if response.output_parsed else None,
+        "refusal": response.refusal,
+        "usage": response.usage.to_dict(),
+    },
+)
+
+stats = BatchExecutor(client=client, sinks=[sink], max_workers=16).run(items)
+print(stats.to_dict())
+```
+
+Use `response_format={...}` with `client.responses.create(...)` when you want to
+provide a raw JSON Schema yourself. Use `text_format=YourModel` for Pydantic
+parsing; `response_format` and `text_format` cannot be used together.
 
 ## Configuration notes
 

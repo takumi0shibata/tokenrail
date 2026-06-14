@@ -15,6 +15,7 @@ from tokenrail.types import CostBreakdown, NormalizedResponse, TimingBreakdown, 
 class _FakeResponsesNamespace:
     def __init__(self):
         self.calls = []
+        self.parse_calls = []
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
@@ -39,6 +40,20 @@ class _FakeResponsesNamespace:
             timing=TimingBreakdown(started_at=1.0, completed_at=2.0, latency_seconds=1.0),
         )
 
+    def parse(self, **kwargs):
+        self.parse_calls.append(kwargs)
+        usage = UsageBreakdown(total_tokens=6)
+        return NormalizedResponse(
+            id=kwargs["request_id"],
+            model=kwargs["model"],
+            provider="fake",
+            output_text=f"ok:{kwargs['input']}",
+            output_parsed={"parsed": kwargs["input"]},
+            raw_response={"id": kwargs["request_id"]},
+            usage=usage,
+            timing=TimingBreakdown(started_at=1.0, completed_at=2.0, latency_seconds=1.0),
+        )
+
 
 class _FakeProvider:
     name = "fake"
@@ -48,6 +63,9 @@ class _FakeProvider:
 
     def create(self, **kwargs):
         return self.responses.create(**kwargs)
+
+    def parse(self, **kwargs):
+        return self.responses.parse(**kwargs)
 
 
 class _FakeClient:
@@ -209,6 +227,27 @@ class MonitorAndExecutorTests(unittest.TestCase):
             self.assertEqual(second.remaining_requests, 0)
             self.assertEqual(second.eta_seconds, 0.0)
             self.assertIsNotNone(second.estimated_finished_at)
+
+    def test_batch_executor_uses_parse_when_text_format_is_present(self):
+        class ParsedShape:
+            pass
+
+        client = _FakeClient()
+        executor = BatchExecutor(client=client, max_workers=1, monitor=RollingMetricsMonitor(printer=None))
+        items = [
+            BatchItem(
+                id="a",
+                request_kwargs={"model": "gpt-5.4-mini", "input": "ok", "text_format": ParsedShape},
+            )
+        ]
+
+        snapshot = executor.run(items)
+
+        self.assertEqual(snapshot.success_requests, 1)
+        self.assertEqual(len(client.responses.calls), 0)
+        self.assertEqual(len(client.responses.parse_calls), 1)
+        self.assertIs(client.responses.parse_calls[0]["text_format"], ParsedShape)
+        self.assertEqual(client.responses.parse_calls[0]["request_id"], "a")
 
     def test_batch_executor_limits_submits_by_rpm(self):
         clock = _Clock()

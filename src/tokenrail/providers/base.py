@@ -18,3 +18,6 @@ class BaseProvider(ABC):
     @abstractmethod
     def create(self, **kwargs: Any) -> NormalizedResponse:
         raise NotImplementedError
+
+    def parse(self, **kwargs: Any) -> NormalizedResponse:
+        raise NotImplementedError(f"{self.name} does not support structured output parsing")

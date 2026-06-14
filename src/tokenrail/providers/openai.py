@@ -25,6 +25,52 @@ def _extract_output_text(raw: JsonDict) -> str | None:
     return "".join(chunks) if chunks else None
 
 
+def _extract_output_parsed(response: Any, raw: JsonDict) -> Any | None:
+    output_parsed = getattr(response, "output_parsed", None)
+    if output_parsed is not None:
+        return output_parsed
+
+    raw_output_parsed = raw.get("output_parsed")
+    if raw_output_parsed is not None:
+        return raw_output_parsed
+
+    for output in getattr(response, "output", []) or []:
+        for content in getattr(output, "content", []) or []:
+            parsed = getattr(content, "parsed", None)
+            if parsed is not None:
+                return parsed
+
+    for item in raw.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content") or []:
+            if not isinstance(content, dict):
+                continue
+            parsed = content.get("parsed")
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _extract_refusal(response: Any, raw: JsonDict) -> str | None:
+    for output in getattr(response, "output", []) or []:
+        for content in getattr(output, "content", []) or []:
+            refusal = getattr(content, "refusal", None)
+            if isinstance(refusal, str):
+                return refusal
+
+    for item in raw.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content") or []:
+            if not isinstance(content, dict):
+                continue
+            refusal = content.get("refusal")
+            if isinstance(refusal, str):
+                return refusal
+    return None
+
+
 def _serialize_response(response: Any) -> JsonDict:
     if isinstance(response, dict):
         return response
@@ -125,6 +171,8 @@ class OpenAIProvider(BaseProvider):
         store: bool | None = None,
         **extra: Any,
     ) -> JsonDict:
+        if "text_format" in extra:
+            raise ValueError("text_format requires responses.parse(); use client.responses.parse(...)")
         self._validate_capabilities(
             model=model,
             reasoning_effort=reasoning_effort,
@@ -159,6 +207,94 @@ class OpenAIProvider(BaseProvider):
             payload["store"] = store
         payload.update(extra)
         return payload
+
+    def build_parse_payload(
+        self,
+        *,
+        model: str,
+        input: Any,
+        text_format: Any,
+        reasoning_effort: str | None = None,
+        verbosity: str | None = None,
+        max_output_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        response_format: JsonDict | None = None,
+        metadata: JsonDict | None = None,
+        service_tier: str | None = None,
+        store: bool | None = None,
+        **extra: Any,
+    ) -> JsonDict:
+        if text_format is None:
+            raise ValueError("text_format is required for responses.parse()")
+        if response_format is not None:
+            raise ValueError("response_format and text_format cannot be used together")
+        self._validate_capabilities(
+            model=model,
+            reasoning_effort=reasoning_effort,
+            verbosity=verbosity,
+            temperature=temperature,
+            top_p=top_p,
+            max_output_tokens=max_output_tokens,
+            response_format={"type": "text_format"},
+        )
+
+        payload: JsonDict = {"model": model, "input": input, "text_format": text_format}
+        if reasoning_effort is not None:
+            payload["reasoning"] = {"effort": reasoning_effort}
+        if verbosity is not None:
+            payload["verbosity"] = verbosity
+        if max_output_tokens is not None:
+            payload["max_output_tokens"] = max_output_tokens
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if top_p is not None:
+            payload["top_p"] = top_p
+        if metadata is not None:
+            payload["metadata"] = metadata
+        if service_tier is not None:
+            payload["service_tier"] = service_tier
+        if store is not None:
+            payload["store"] = store
+        payload.update(extra)
+        return payload
+
+    def _normalize_response(
+        self,
+        *,
+        response: Any,
+        model: str,
+        request_id: str | None,
+        service_tier: str | None,
+        metadata: JsonDict | None,
+        started_at: float,
+        completed_at: float,
+        output_parsed: Any | None = None,
+        refusal: str | None = None,
+    ) -> NormalizedResponse:
+        raw = _serialize_response(response)
+        usage = UsageBreakdown.from_dict(raw.get("usage")).finalized()
+        billing = raw.get("billing")
+        actual_tier = str(raw.get("service_tier") or service_tier or "default")
+        cost = calculate_cost(model=model, usage=usage, payer=(billing or {}).get("payer"), service_tier=actual_tier)
+        return NormalizedResponse(
+            id=request_id or str(raw.get("id") or ""),
+            model=str(raw.get("model") or model),
+            provider=self.name,
+            output_text=_extract_output_text(raw),
+            raw_response=raw,
+            output_parsed=output_parsed,
+            refusal=refusal,
+            usage=usage,
+            billing=billing if isinstance(billing, dict) else None,
+            cost=cost,
+            timing=TimingBreakdown(
+                started_at=started_at,
+                completed_at=completed_at,
+                latency_seconds=completed_at - started_at,
+            ),
+            metadata=metadata,
+        )
 
     def create(
         self,
@@ -195,24 +331,62 @@ class OpenAIProvider(BaseProvider):
         started_at = time.time()
         response = self._responses.create(**payload)
         completed_at = time.time()
-        raw = _serialize_response(response)
-        usage = UsageBreakdown.from_dict(raw.get("usage")).finalized()
-        billing = raw.get("billing")
-        actual_tier = str(raw.get("service_tier") or service_tier or "default")
-        cost = calculate_cost(model=model, usage=usage, payer=(billing or {}).get("payer"), service_tier=actual_tier)
-        return NormalizedResponse(
-            id=request_id or str(raw.get("id") or ""),
-            model=str(raw.get("model") or model),
-            provider=self.name,
-            output_text=_extract_output_text(raw),
-            raw_response=raw,
-            usage=usage,
-            billing=billing if isinstance(billing, dict) else None,
-            cost=cost,
-            timing=TimingBreakdown(
-                started_at=started_at,
-                completed_at=completed_at,
-                latency_seconds=completed_at - started_at,
-            ),
+        return self._normalize_response(
+            response=response,
+            model=model,
+            request_id=request_id,
+            service_tier=service_tier,
             metadata=metadata,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
+
+    def parse(
+        self,
+        *,
+        model: str,
+        input: Any,
+        text_format: Any,
+        reasoning_effort: str | None = None,
+        verbosity: str | None = None,
+        max_output_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        response_format: JsonDict | None = None,
+        request_id: str | None = None,
+        metadata: JsonDict | None = None,
+        service_tier: str | None = None,
+        store: bool | None = None,
+        **extra: Any,
+    ) -> NormalizedResponse:
+        payload = self.build_parse_payload(
+            model=model,
+            input=input,
+            text_format=text_format,
+            reasoning_effort=reasoning_effort,
+            verbosity=verbosity,
+            max_output_tokens=max_output_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            response_format=response_format,
+            metadata=metadata,
+            service_tier=service_tier,
+            store=store,
+            **extra,
+        )
+
+        started_at = time.time()
+        response = self._responses.parse(**payload)
+        completed_at = time.time()
+        raw = _serialize_response(response)
+        return self._normalize_response(
+            response=raw,
+            model=model,
+            request_id=request_id,
+            service_tier=service_tier,
+            metadata=metadata,
+            started_at=started_at,
+            completed_at=completed_at,
+            output_parsed=_extract_output_parsed(response, raw),
+            refusal=_extract_refusal(response, raw),
         )

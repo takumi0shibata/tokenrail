@@ -17,6 +17,7 @@ class _FakeResponsesAPI:
         self.payloads = payloads
         self.error = error
         self.calls = []
+        self.parse_calls = []
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
@@ -24,6 +25,10 @@ class _FakeResponsesAPI:
             err = self.error.pop(0)
             if err is not None:
                 raise err
+        return self.payloads.pop(0)
+
+    def parse(self, **kwargs):
+        self.parse_calls.append(kwargs)
         return self.payloads.pop(0)
 
 
@@ -126,6 +131,71 @@ class OpenAIProviderTests(unittest.TestCase):
         self.assertEqual(sent["max_output_tokens"], 32)
         self.assertEqual(response.usage.cached_tokens, 2)
         self.assertGreater(response.cost.developer_usd, 0.0)
+
+    def test_parse_uses_text_format_and_normalizes_parsed_output(self):
+        class ParsedShape:
+            pass
+
+        payload = {
+            "id": "resp_2",
+            "model": "gpt-5.4-mini-2026-03-17",
+            "service_tier": "default",
+            "output_text": '{"answer":"done"}',
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": '{"answer":"done"}',
+                            "parsed": {"answer": "done"},
+                        }
+                    ],
+                }
+            ],
+            "usage": {"input_tokens": 4, "output_tokens": 2, "total_tokens": 6},
+            "billing": {"payer": "developer"},
+        }
+        api = _FakeResponsesAPI([payload])
+        provider = OpenAIProvider(client=_FakeClient(api))
+
+        response = provider.parse(
+            model="gpt-5.4-mini-2026-03-17",
+            input="hello",
+            text_format=ParsedShape,
+            reasoning_effort="medium",
+            verbosity="low",
+            request_id="job-2",
+        )
+
+        sent = api.parse_calls[0]
+        self.assertIs(sent["text_format"], ParsedShape)
+        self.assertEqual(sent["reasoning"]["effort"], "medium")
+        self.assertEqual(sent["verbosity"], "low")
+        self.assertEqual(response.id, "job-2")
+        self.assertEqual(response.output_parsed, {"answer": "done"})
+        self.assertIsNone(response.refusal)
+        self.assertEqual(response.output_text, '{"answer":"done"}')
+
+    def test_parse_rejects_response_format(self):
+        provider = OpenAIProvider(client=_FakeClient(_FakeResponsesAPI([])))
+
+        with self.assertRaisesRegex(ValueError, "response_format and text_format"):
+            provider.build_parse_payload(
+                model="gpt-5.4-mini-2026-03-17",
+                input="hello",
+                text_format=dict,
+                response_format={"type": "json_schema"},
+            )
+
+        with self.assertRaisesRegex(ValueError, "text_format is required"):
+            provider.build_parse_payload(model="gpt-5.4-mini-2026-03-17", input="hello", text_format=None)
+
+    def test_create_rejects_text_format(self):
+        provider = OpenAIProvider(client=_FakeClient(_FakeResponsesAPI([])))
+
+        with self.assertRaisesRegex(ValueError, "text_format requires responses.parse"):
+            provider.build_payload(model="gpt-5.4-mini-2026-03-17", input="hello", text_format=dict)
 
     def test_create_propagates_exceptions_without_local_retry(self):
         api = _FakeResponsesAPI([], error=[RuntimeError("boom")])
