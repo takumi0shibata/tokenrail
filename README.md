@@ -29,7 +29,7 @@ To track an unreleased revision instead, depend on the Git repository directly:
 
 ```toml
 [tool.uv.sources]
-tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v1.1.0" }
+tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", tag = "v2.0.0" }
 ```
 
 Set your OpenAI API key in the consuming project before use:
@@ -147,11 +147,47 @@ OpenAI SDK's `responses.parse(...)` path does not accept that combination.
 
 If you use a custom `projector` with `ResultsJsonlSink`, make sure it keeps an `"id"` field — resume relies on it.
 
+## Progress output
+
+`RollingMetricsMonitor` keeps request-specific details short and prints batch
+metrics separately:
+
+```text
+tokenrail · 100 requests
+   PAYER: openai — costs are covered
+  0001  ok   req-0001      model=gpt-5.6-terra  1.3k tok (40% cached)  $0.002000  oai  1.4s
+── 50/100 · 50% · 00:00:14 · ETA 00:00:14 · 58 rpm · 74k tpm · $0.100 (oai 100% / dev $0.000)
+!! PAYER SWITCH: openai → developer at 53/100 (00:00:15) — now billed to you
+  0053  ok   req-0053      1.2k tok (38% cached)  $0.001900  DEV  1.1s
+Done 100/100 · 99 ok / 1 errors · 00:00:29
+Total $0.198 — openai $0.104 (53%) / developer $0.094 (47%)
+Payer switches: 1
+```
+
+Periodic summaries are emitted every 50 requests or 30 seconds by default.
+Configure them with `summary_every` and `summary_interval`, adjust payer
+transition hysteresis with `payer_switch_threshold`, and control ANSI styling
+with `color`. Pass `verbose=True` to use the legacy `[n/total] id=...` format.
+`printer=None` still disables all monitor output.
+
 ## Cost tracking
 
-- Costs are estimated from a checked-in per-model pricing table (`tokenrail.catalog`). Models without a pricing entry get `cost=None`; prices may lag behind OpenAI's official pricing page, which is always authoritative.
+- GPT-5.6 Sol (`gpt-5.6-sol` and the `gpt-5.6` alias) is estimated at $5.00 input / $0.50 cached input / $30.00 output per million tokens.
+- GPT-5.6 Terra (`gpt-5.6-terra`) is estimated at $2.00 / $0.20 / $12.00, and GPT-5.6 Luna (`gpt-5.6-luna`) at $0.20 / $0.02 / $1.20.
+- Costs use the checked-in base, standard-tier pricing table (`tokenrail.catalog`). The estimate does not apply GPT-5.6 long-context rates above 272K input tokens, cache-write charges, Batch/Fast/Flex pricing, or regional uplifts. The [official OpenAI pricing page](https://developers.openai.com/api/docs/pricing) is authoritative.
+- Models without a pricing entry get `cost=None`. If an unregistered model partially matches an older catalog entry, tokenrail emits `ModelCatalogFallbackWarning` once per model and names the capability and pricing entries used as fallbacks.
 - OpenAI cost allocation is inferred from `billing.payer` in the response body. When `payer == "openai"`, the nominal request cost is counted as OpenAI-covered rather than developer-billed.
 - `reasoning_effort` is gated to `gpt-5` / `o`-series style models in the checked-in capability registry.
+
+Fallback warnings can be filtered with Python's standard warning controls:
+
+```python
+import warnings
+
+from tokenrail.catalog import ModelCatalogFallbackWarning
+
+warnings.filterwarnings("ignore", category=ModelCatalogFallbackWarning)
+```
 
 ## Development
 

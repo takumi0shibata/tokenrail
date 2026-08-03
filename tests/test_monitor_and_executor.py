@@ -5,11 +5,60 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 from tokenrail.executor import BatchExecutor, BatchItem, batch_items_from_queries
 from tokenrail.monitor import RollingMetricsMonitor
 from tokenrail.sinks import ResultsJsonlSink
 from tokenrail.types import CostBreakdown, NormalizedResponse, TimingBreakdown, UsageBreakdown
+
+_UNSET = object()
+
+
+def _response(
+    item_id: str,
+    *,
+    payer: str | None = "openai",
+    model: str = "gpt-5.6-terra",
+    with_cost: bool = True,
+    billing_payer: str | None | object = _UNSET,
+    error: str | None = None,
+) -> NormalizedResponse:
+    if billing_payer is _UNSET:
+        billing_payer = payer
+    billing = {"payer": billing_payer} if billing_payer is not None else None
+    if with_cost:
+        cost = CostBreakdown(
+            nominal_usd=0.1,
+            developer_usd=0.1 if payer != "openai" else 0.0,
+            openai_usd=0.1 if payer == "openai" else 0.0,
+            payer=payer,
+        )
+    else:
+        cost = None
+    usage = (
+        UsageBreakdown.empty()
+        if error is not None
+        else UsageBreakdown(
+            input_tokens=1_000,
+            cached_tokens=400,
+            output_tokens=280,
+            reasoning_tokens=20,
+            total_tokens=1_280,
+        )
+    )
+    return NormalizedResponse(
+        id=item_id,
+        model=model,
+        provider="openai",
+        output_text=None if error else "ok",
+        raw_response={},
+        usage=usage,
+        billing=billing,
+        cost=cost,
+        timing=TimingBreakdown(started_at=0.0, completed_at=1.4, latency_seconds=1.4),
+        error=error,
+    )
 
 
 class _FakeResponsesNamespace:
@@ -122,6 +171,212 @@ class _TimedClient:
 
 
 class MonitorAndExecutorTests(unittest.TestCase):
+    def test_monitor_constructor_validates_new_options(self):
+        with self.assertRaisesRegex(ValueError, "summary_every"):
+            RollingMetricsMonitor(summary_every=0)
+        with self.assertRaisesRegex(ValueError, "summary_interval"):
+            RollingMetricsMonitor(summary_interval=0)
+        with self.assertRaisesRegex(ValueError, "payer_switch_threshold"):
+            RollingMetricsMonitor(payer_switch_threshold=0)
+
+    def test_default_output_separates_header_payer_and_request_details(self):
+        output = []
+        monitor = RollingMetricsMonitor(
+            printer=output.append,
+            summary_interval=None,
+            payer_switch_threshold=1,
+            color=False,
+        )
+        monitor.start(total_requests=2, todo_requests=2, skipped_requests=0)
+        monitor.record(_response("req-0001"))
+        monitor.record(_response("req-0002"))
+
+        self.assertEqual(output[0], "tokenrail · 2 requests")
+        self.assertEqual(output[1], "   PAYER: openai — costs are covered")
+        self.assertIn("0001  ok", output[2])
+        self.assertIn("model=gpt-5.6-terra", output[2])
+        self.assertIn("1.3k tok (+20 reasoning) (40% cached)", output[2])
+        self.assertIn("$0.100000", output[2])
+        self.assertIn("oai", output[2])
+        self.assertIn("1.4s", output[2])
+        self.assertNotIn("model=", output[3])
+
+    def test_model_name_is_repeated_only_when_it_changes(self):
+        output = []
+        monitor = RollingMetricsMonitor(printer=output.append, summary_interval=None, color=False)
+        monitor.start(total_requests=3, todo_requests=3, skipped_requests=0)
+        monitor.record(_response("1", model="gpt-5.6-terra"))
+        monitor.record(_response("2", model="gpt-5.6-terra"))
+        monitor.record(_response("3", model="gpt-5.6-luna"))
+        request_lines = [line for line in output if "  ok " in line]
+        self.assertIn("model=gpt-5.6-terra", request_lines[0])
+        self.assertNotIn("model=", request_lines[1])
+        self.assertIn("model=gpt-5.6-luna", request_lines[2])
+
+    def test_payer_hysteresis_tracks_initial_switch_and_recovery(self):
+        output = []
+        monitor = RollingMetricsMonitor(printer=output.append, summary_interval=None, color=False)
+        monitor.start(total_requests=15, todo_requests=15, skipped_requests=0)
+        for index in range(5):
+            monitor.record(_response(f"oai-{index}", payer="openai"))
+        for index in range(5):
+            monitor.record(_response(f"dev-{index}", payer="developer"))
+        for index in range(5):
+            snapshot = monitor.record(_response(f"oai-again-{index}", payer="openai"))
+
+        payer_lines = [line for line in output if "PAYER" in line]
+        self.assertEqual(len(payer_lines), 3)
+        self.assertIn("PAYER: openai", payer_lines[0])
+        self.assertNotIn("SWITCH", payer_lines[0])
+        self.assertTrue(payer_lines[1].startswith("!! PAYER SWITCH: openai → developer"))
+        self.assertTrue(payer_lines[2].startswith("   PAYER SWITCH: developer → openai"))
+        self.assertEqual(snapshot.current_payer, "openai")
+        self.assertEqual(snapshot.payer_switches, 2)
+        self.assertEqual(snapshot.openai_requests, 10)
+        self.assertEqual(snapshot.developer_requests, 5)
+
+    def test_unknown_payer_is_counted_but_does_not_drive_transitions(self):
+        output = []
+        monitor = RollingMetricsMonitor(printer=output.append, summary_interval=None, color=False)
+        monitor.start(total_requests=8, todo_requests=8, skipped_requests=0)
+        for index in range(3):
+            monitor.record(_response(f"oai-{index}", payer="openai"))
+        monitor.record(_response("dev-one", payer="developer"))
+        monitor.record(_response("unknown", payer=None, with_cost=False, billing_payer=None))
+        monitor.record(_response("oai-again", payer="openai"))
+        snapshot = monitor.snapshot()
+
+        self.assertEqual(snapshot.current_payer, "openai")
+        self.assertEqual(snapshot.payer_switches, 0)
+        self.assertEqual(snapshot.developer_requests, 1)
+        self.assertEqual(snapshot.unknown_payer_requests, 1)
+        self.assertFalse(any("PAYER SWITCH" in line for line in output))
+
+    def test_billing_payer_is_used_when_price_is_unavailable(self):
+        output = []
+        monitor = RollingMetricsMonitor(
+            printer=output.append,
+            summary_interval=None,
+            payer_switch_threshold=1,
+            color=False,
+        )
+        monitor.start(total_requests=1, todo_requests=1, skipped_requests=0)
+        snapshot = monitor.record(_response("unknown-price", with_cost=False, billing_payer="developer"))
+
+        self.assertEqual(snapshot.current_payer, "developer")
+        self.assertEqual(snapshot.developer_requests, 1)
+        self.assertIn("!! PAYER: developer", output[1])
+        self.assertIn("$—", output[2])
+        self.assertIn("DEV", output[2])
+
+    def test_summary_prints_by_count_and_time_without_duplicates(self):
+        output = []
+        monitor = RollingMetricsMonitor(
+            printer=output.append,
+            summary_every=2,
+            summary_interval=None,
+            color=False,
+        )
+        monitor.start(total_requests=4, todo_requests=4, skipped_requests=0)
+        for index in range(4):
+            monitor.record(_response(str(index)))
+        summaries = [line for line in output if line.startswith("──")]
+        self.assertEqual(len(summaries), 2)
+        self.assertIn("2/4", summaries[0])
+        self.assertIn("4/4", summaries[1])
+        self.assertIn("oai 100%", summaries[1])
+
+        timed_output = []
+        timed_monitor = RollingMetricsMonitor(
+            printer=timed_output.append,
+            summary_every=50,
+            summary_interval=30.0,
+            color=False,
+        )
+        with patch("tokenrail.monitor.time.time", side_effect=[0.0, 10.0, 31.0]):
+            timed_monitor.start(total_requests=2, todo_requests=2, skipped_requests=0)
+            timed_monitor.record(_response("1"))
+            timed_monitor.record(_response("2"))
+        self.assertEqual(len([line for line in timed_output if line.startswith("──")]), 1)
+
+    def test_finalize_prints_totals_and_sorted_model_breakdown(self):
+        output = []
+        monitor = RollingMetricsMonitor(printer=output.append, summary_interval=None, color=False)
+        monitor.start(total_requests=2, todo_requests=2, skipped_requests=0)
+        monitor.record(_response("b", model="gpt-5.6-terra", payer="developer"))
+        monitor.record(_response("a", model="gpt-5.6-luna", payer="openai"))
+        snapshot = monitor.finalize(total_requests=2, skipped_requests=0)
+
+        final_lines = monitor.format_final(snapshot)
+        self.assertTrue(final_lines[0].startswith("Done 2/2 · 2 ok / 0 errors"))
+        self.assertIn("Total $0.200", final_lines[1])
+        self.assertFalse(any(line.startswith("Payer switches:") for line in final_lines))
+        model_lines = [line.strip() for line in final_lines if " req · " in line]
+        self.assertTrue(model_lines[0].startswith("gpt-5.6-luna"))
+        self.assertTrue(model_lines[1].startswith("gpt-5.6-terra"))
+        self.assertEqual(output[-len(final_lines) :], final_lines)
+
+    def test_new_snapshot_fields_survive_copy_and_serialization(self):
+        monitor = RollingMetricsMonitor(printer=None, payer_switch_threshold=1)
+        monitor.start(total_requests=1, todo_requests=1, skipped_requests=0)
+        monitor.record(_response("1", payer="developer"))
+        snapshot = monitor.snapshot()
+        serialized = snapshot.to_dict()
+        self.assertEqual(snapshot.current_payer, "developer")
+        self.assertEqual(snapshot.developer_requests, 1)
+        for key in (
+            "current_payer",
+            "payer_switches",
+            "openai_requests",
+            "developer_requests",
+            "unknown_payer_requests",
+        ):
+            self.assertIn(key, serialized)
+
+    def test_error_request_line_omits_token_and_cost_fields(self):
+        monitor = RollingMetricsMonitor(printer=None, color=False)
+        monitor.start(total_requests=1, todo_requests=1, skipped_requests=0)
+        response = _response("failed", with_cost=False, billing_payer=None, error="RateLimitError: slow down")
+        snapshot = monitor.record(response)
+        line = monitor.format_request(response, snapshot, show_model=True)
+        self.assertIn("ERR", line)
+        self.assertIn("RateLimitError: slow down", line)
+        self.assertNotIn("tok", line)
+        self.assertNotIn("$", line)
+
+    def test_verbose_mode_uses_only_legacy_request_lines(self):
+        output = []
+        monitor = RollingMetricsMonitor(printer=output.append, verbose=True, summary_every=1)
+        monitor.start(total_requests=1, todo_requests=1, skipped_requests=0)
+        monitor.record(_response("1"))
+        monitor.finalize(total_requests=1, skipped_requests=0)
+        self.assertEqual(len(output), 1)
+        self.assertTrue(output[0].startswith("[1/1] id=1 model=gpt-5.6-terra"))
+
+    def test_forced_color_adds_ansi_without_changing_plain_text_mode(self):
+        colored_output = []
+        colored = RollingMetricsMonitor(
+            printer=colored_output.append,
+            summary_interval=None,
+            payer_switch_threshold=1,
+            color=True,
+        )
+        colored.start(total_requests=1, todo_requests=1, skipped_requests=0)
+        colored.record(_response("1", payer="developer"))
+        self.assertIn("\033[", colored_output[1])
+        self.assertIn("\033[", colored_output[2])
+
+        plain_output = []
+        plain = RollingMetricsMonitor(
+            printer=plain_output.append,
+            summary_interval=None,
+            payer_switch_threshold=1,
+            color=False,
+        )
+        plain.start(total_requests=1, todo_requests=1, skipped_requests=0)
+        plain.record(_response("1", payer="developer"))
+        self.assertFalse(any("\033[" in line for line in plain_output))
+
     def test_monitor_aggregates_usage_and_cost(self):
         monitor = RollingMetricsMonitor(printer=None)
         monitor.start(total_requests=2, todo_requests=2, skipped_requests=0)

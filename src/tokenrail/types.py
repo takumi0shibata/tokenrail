@@ -210,6 +210,11 @@ class StatsSnapshot:
     nominal_usd: float = 0.0
     developer_usd: float = 0.0
     openai_usd: float = 0.0
+    current_payer: str | None = None
+    payer_switches: int = 0
+    openai_requests: int = 0
+    developer_requests: int = 0
+    unknown_payer_requests: int = 0
     by_model: dict[str, ModelStats] = field(default_factory=dict)
 
     def to_dict(self) -> JsonDict:
@@ -236,5 +241,10 @@ class StatsSnapshot:
             "nominal_usd": self.nominal_usd,
             "developer_usd": self.developer_usd,
             "openai_usd": self.openai_usd,
+            "current_payer": self.current_payer,
+            "payer_switches": self.payer_switches,
+            "openai_requests": self.openai_requests,
+            "developer_requests": self.developer_requests,
+            "unknown_payer_requests": self.unknown_payer_requests,
             "by_model": {model: stats.to_dict() for model, stats in self.by_model.items()},
         }

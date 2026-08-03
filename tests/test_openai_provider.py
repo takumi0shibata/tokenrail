@@ -2,14 +2,22 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import warnings
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import tokenrail
 import tokenrail.providers as providers
-from tokenrail.catalog import get_model_capabilities, get_model_pricing
+from tokenrail.catalog import (
+    ModelCatalogFallbackWarning,
+    calculate_cost,
+    get_model_capabilities,
+    get_model_pricing,
+)
 from tokenrail.client import RailClient
 from tokenrail.providers.openai import OpenAIProvider
 from tokenrail.sinks import PerRequestJsonSink, ResultsJsonlSink
+from tokenrail.types import UsageBreakdown
 
 
 class _FakeResponsesAPI:
@@ -205,16 +213,21 @@ class OpenAIProviderTests(unittest.TestCase):
         self.assertEqual(len(api.calls), 1)
 
     def test_model_pricing_matches_delimited_substrings(self):
-        pricing = get_model_pricing("GEE-123456-2026-gpt-5.2")
-        self.assertIsNotNone(pricing)
-        self.assertEqual(str(pricing.input_per_million), "1.75")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            pricing = get_model_pricing("GEE-123456-2026-gpt-5.2")
+            self.assertIsNotNone(pricing)
+            self.assertEqual(str(pricing.input_per_million), "1.75")
 
-        pricing = get_model_pricing("vendor/gpt-5.4-mini")
-        self.assertIsNotNone(pricing)
-        self.assertEqual(str(pricing.input_per_million), "0.750")
+            pricing = get_model_pricing("vendor/gpt-5.4-mini")
+            self.assertIsNotNone(pricing)
+            self.assertEqual(str(pricing.input_per_million), "0.750")
 
-        pricing = get_model_pricing("abcgpt-5.2xyz")
-        self.assertIsNone(pricing)
+            pricing = get_model_pricing("abcgpt-5.2xyz")
+            self.assertIsNone(pricing)
+
+        self.assertEqual(len(caught), 3)
+        self.assertTrue(all(item.category is ModelCatalogFallbackWarning for item in caught))
 
     def test_longest_match_wins_for_model_rules(self):
         pricing = get_model_pricing("gpt-5.4-mini-2026-03-17")
@@ -230,9 +243,81 @@ class OpenAIProviderTests(unittest.TestCase):
         self.assertEqual(str(pricing.input_per_million), "0.20")
 
     def test_capability_matching_uses_same_lookup(self):
-        capabilities = get_model_capabilities("foo/gpt-4o-mini")
+        with self.assertWarnsRegex(ModelCatalogFallbackWarning, "pricing from 'gpt-4o-mini'"):
+            capabilities = get_model_capabilities("foo/gpt-4o-mini")
         self.assertTrue(capabilities.verbosity)
         self.assertFalse(capabilities.reasoning_effort)
+
+    def test_gpt56_catalog_prices_capabilities_and_alias(self):
+        expected = {
+            "gpt-5.6-sol": ("5.00", "0.50", "30.00"),
+            "gpt-5.6": ("5.00", "0.50", "30.00"),
+            "gpt-5.6-terra": ("2.00", "0.20", "12.00"),
+            "gpt-5.6-luna": ("0.20", "0.02", "1.20"),
+        }
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            for model, prices in expected.items():
+                pricing = get_model_pricing(model)
+                self.assertIsNotNone(pricing)
+                self.assertEqual(
+                    (
+                        str(pricing.input_per_million),
+                        str(pricing.cached_input_per_million),
+                        str(pricing.output_per_million),
+                    ),
+                    prices,
+                )
+                capabilities = get_model_capabilities(model)
+                self.assertTrue(capabilities.reasoning_effort)
+                self.assertTrue(capabilities.verbosity)
+        self.assertEqual(caught, [])
+
+    def test_gpt56_cost_calculation_uses_base_prices(self):
+        usage = UsageBreakdown(input_tokens=2_000_000, cached_tokens=1_000_000, output_tokens=1_000_000)
+        expected_costs = {
+            "gpt-5.6-sol": 35.5,
+            "gpt-5.6-terra": 14.2,
+            "gpt-5.6-luna": 1.42,
+        }
+        for model, expected in expected_costs.items():
+            cost = calculate_cost(model, usage, payer="developer")
+            self.assertIsNotNone(cost)
+            self.assertAlmostEqual(cost.nominal_usd, expected)
+            self.assertAlmostEqual(cost.developer_usd, expected)
+
+    def test_official_snapshot_suffix_does_not_warn(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            pricing = get_model_pricing("gpt-5.6-terra-2026-08-03")
+        self.assertIsNotNone(pricing)
+        self.assertEqual(str(pricing.input_per_million), "2.00")
+        self.assertEqual(caught, [])
+
+    def test_catalog_fallback_warning_is_emitted_once_per_model(self):
+        model = "gpt-5.7-once-only"
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                list(executor.map(get_model_pricing, [model] * 20))
+            get_model_capabilities(model)
+        self.assertEqual(len(caught), 1)
+        message = str(caught[0].message)
+        self.assertIn("Model 'gpt-5.7-once-only' is not explicitly registered", message)
+        self.assertIn("capabilities from 'gpt-5'", message)
+        self.assertIn("pricing from 'gpt-5'", message)
+
+    def test_unknown_model_warning_explains_missing_pricing(self):
+        model = "brand-new-model-without-catalog-entry"
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            capabilities = get_model_capabilities(model)
+            pricing = get_model_pricing(model)
+        self.assertFalse(capabilities.reasoning_effort)
+        self.assertIsNone(pricing)
+        self.assertEqual(len(caught), 1)
+        self.assertIn("default capabilities", str(caught[0].message))
+        self.assertIn("cost=None", str(caught[0].message))
 
 
 class SinkTests(unittest.TestCase):

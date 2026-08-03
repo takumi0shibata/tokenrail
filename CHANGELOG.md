@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-08-03
+
+### Added
+
+- GPT-5.6 Sol, Terra, and Luna capability and base-price catalog entries,
+  including the `gpt-5.6` alias for Sol.
+- `ModelCatalogFallbackWarning` identifies unregistered models and the catalog
+  entries used as capability or pricing fallbacks.
+- Payer state, payer switch count, and raw payer request counts on
+  `StatsSnapshot`.
+
+### Changed
+
+- `RollingMetricsMonitor` now prints a compact request line, explicit payer
+  transitions, periodic summaries, and a final batch summary by default.
+  Pass `verbose=True` to retain the previous progress format.
+- Monitor output supports automatic or forced ANSI emphasis without an added
+  dependency.
+- GPT-5.6 cost estimates use current base standard-tier prices. Long-context,
+  cache-write, Batch/Fast/Flex, and regional price adjustments remain outside
+  the estimator.
+
 ## [1.1.0] - 2026-06-14
 
 ### Added

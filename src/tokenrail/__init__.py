@@ -13,7 +13,7 @@ from .providers import OpenAIProvider
 from .sinks import PerRequestJsonSink, ResultsJsonlSink
 from .types import BatchItem, CostBreakdown, NormalizedResponse, StatsSnapshot, UsageBreakdown
 
-__version__ = "1.1.0"
+__version__ = "2.0.0"
 
 __all__ = [
     "__version__",
