@@ -90,13 +90,23 @@ class RollingMetricsMonitor:
             self._snapshot = StatsSnapshot()
             self._reset_display_state_unlocked()
 
-    def start(self, *, total_requests: int, todo_requests: int, skipped_requests: int) -> StatsSnapshot:
+    def start(
+        self,
+        *,
+        total_requests: int,
+        todo_requests: int,
+        skipped_requests: int,
+        prompt_cache_shards: int = 0,
+        prompt_cache_target_rpm_per_shard: int | None = None,
+    ) -> StatsSnapshot:
         with self._lock:
             now = time.time()
             self._snapshot.total_requests = total_requests
             self._snapshot.todo_requests = todo_requests
             self._snapshot.skipped_requests = skipped_requests
             self._snapshot.remaining_requests = todo_requests
+            self._snapshot.prompt_cache_shards = prompt_cache_shards
+            self._snapshot.prompt_cache_target_rpm_per_shard = prompt_cache_target_rpm_per_shard
             self._snapshot.started_at = now
             self._snapshot.last_updated_at = now
             self._snapshot.elapsed_seconds = 0.0
@@ -160,6 +170,7 @@ class RollingMetricsMonitor:
             estimated_finished_at=self._snapshot.estimated_finished_at,
             input_tokens=self._snapshot.input_tokens,
             cached_tokens=self._snapshot.cached_tokens,
+            cache_write_tokens=self._snapshot.cache_write_tokens,
             output_tokens=self._snapshot.output_tokens,
             reasoning_tokens=self._snapshot.reasoning_tokens,
             total_tokens=self._snapshot.total_tokens,
@@ -173,6 +184,8 @@ class RollingMetricsMonitor:
             openai_requests=self._snapshot.openai_requests,
             developer_requests=self._snapshot.developer_requests,
             unknown_payer_requests=self._snapshot.unknown_payer_requests,
+            prompt_cache_shards=self._snapshot.prompt_cache_shards,
+            prompt_cache_target_rpm_per_shard=self._snapshot.prompt_cache_target_rpm_per_shard,
             by_model={model: ModelStats(**stats.to_dict()) for model, stats in self._snapshot.by_model.items()},
         )
 
@@ -206,12 +219,14 @@ class RollingMetricsMonitor:
 
             self._snapshot.input_tokens += response.usage.input_tokens
             self._snapshot.cached_tokens += response.usage.cached_tokens
+            self._snapshot.cache_write_tokens += response.usage.cache_write_tokens
             self._snapshot.output_tokens += response.usage.output_tokens
             self._snapshot.reasoning_tokens += response.usage.reasoning_tokens
             self._snapshot.total_tokens += total_tokens
 
             model_stats.input_tokens += response.usage.input_tokens
             model_stats.cached_tokens += response.usage.cached_tokens
+            model_stats.cache_write_tokens += response.usage.cache_write_tokens
             model_stats.output_tokens += response.usage.output_tokens
             model_stats.reasoning_tokens += response.usage.reasoning_tokens
             model_stats.total_tokens += total_tokens
@@ -315,11 +330,17 @@ class RollingMetricsMonitor:
         return "".join(codes) + text + _ANSI_RESET
 
     def format_header(self, snapshot: StatsSnapshot) -> str:
+        cache_suffix = ""
+        if snapshot.prompt_cache_shards and snapshot.prompt_cache_target_rpm_per_shard is not None:
+            cache_suffix = (
+                f" · prompt cache {snapshot.prompt_cache_shards} shards "
+                f"@ {snapshot.prompt_cache_target_rpm_per_shard} rpm/key"
+            )
         if snapshot.skipped_requests == 0:
-            return f"tokenrail · {snapshot.total_requests} requests"
+            return f"tokenrail · {snapshot.total_requests} requests{cache_suffix}"
         return (
             f"tokenrail · {snapshot.total_requests} requests "
-            f"({snapshot.todo_requests} todo / {snapshot.skipped_requests} skipped)"
+            f"({snapshot.todo_requests} todo / {snapshot.skipped_requests} skipped){cache_suffix}"
         )
 
     def format_request(
@@ -344,7 +365,11 @@ class RollingMetricsMonitor:
             token_text += f" (+{_format_tokens(response.usage.reasoning_tokens)} reasoning)"
         if response.usage.input_tokens > 0:
             cached_pct = round(response.usage.cached_tokens / response.usage.input_tokens * 100)
-            token_text += f" ({cached_pct}% cached)"
+            cache_write_pct = round(response.usage.cache_write_tokens / response.usage.input_tokens * 100)
+            if snapshot.prompt_cache_shards or response.usage.cache_write_tokens:
+                token_text += f" ({cached_pct}% cached / {cache_write_pct}% cache-write)"
+            else:
+                token_text += f" ({cached_pct}% cached)"
 
         cost_text = _format_usd(response.cost.nominal_usd, digits=6) if response.cost is not None else "$—"
         payer = self._observed_payer(response)
@@ -380,12 +405,17 @@ class RollingMetricsMonitor:
             openai_pct = f"{round(snapshot.openai_usd / snapshot.nominal_usd * 100)}%"
         else:
             openai_pct = "—"
+        cache_text = ""
+        if snapshot.prompt_cache_shards and snapshot.input_tokens:
+            read_pct = round(snapshot.cached_tokens / snapshot.input_tokens * 100)
+            write_pct = round(snapshot.cache_write_tokens / snapshot.input_tokens * 100)
+            cache_text = f" · cache r{read_pct}%/w{write_pct}%"
         return (
             f"── {snapshot.processed_requests}/{snapshot.todo_requests} · {pct}% · "
             f"{self._format_duration(snapshot.elapsed_seconds)} · ETA {eta} · "
             f"{snapshot.rolling_rpm:.0f} rpm · {_format_tokens(round(snapshot.rolling_tpm))} tpm · "
             f"{_format_usd(snapshot.nominal_usd, digits=3)} "
-            f"(oai {openai_pct} / dev {_format_usd(snapshot.developer_usd, digits=3)})"
+            f"(oai {openai_pct} / dev {_format_usd(snapshot.developer_usd, digits=3)}){cache_text}"
         )
 
     def format_final(self, snapshot: StatsSnapshot) -> list[str]:
@@ -404,6 +434,12 @@ class RollingMetricsMonitor:
             f"openai {_format_usd(snapshot.openai_usd, digits=3)} ({openai_pct}) / "
             f"developer {_format_usd(snapshot.developer_usd, digits=3)} ({developer_pct})"
         )
+        if snapshot.prompt_cache_shards:
+            lines.append(
+                f"Prompt cache: {snapshot.prompt_cache_shards} shards · "
+                f"{_format_tokens(snapshot.cached_tokens)} read / "
+                f"{_format_tokens(snapshot.cache_write_tokens)} written"
+            )
         if snapshot.payer_switches:
             lines.append(f"Payer switches: {snapshot.payer_switches}")
         if len(snapshot.by_model) >= 2:
@@ -425,7 +461,8 @@ class RollingMetricsMonitor:
             f"elapsed={self._format_duration(snapshot.elapsed_seconds)} "
             f"eta={self._format_duration(snapshot.eta_seconds)} "
             f"finish={self._format_finish_time(snapshot.estimated_finished_at)} "
-            f"in={usage.input_tokens} cached={usage.cached_tokens} out={usage.output_tokens} "
+            f"in={usage.input_tokens} cached={usage.cached_tokens} cache_write={usage.cache_write_tokens} "
+            f"out={usage.output_tokens} "
             f"reasoning={usage.reasoning_tokens} total={usage.total_tokens} "
             f"rpm={snapshot.rolling_rpm:.0f} tpm={snapshot.rolling_tpm:.0f} "
             f"cost=${nominal:.6f} payer={payer or '-'} "

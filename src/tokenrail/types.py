@@ -25,13 +25,14 @@ def to_jsonable(value: Any) -> Any:
 
 @dataclass(slots=True)
 class UsageBreakdown:
-    """Token usage for a single request, including cached and reasoning tokens."""
+    """Token usage for a single request, including prompt-cache details."""
 
     input_tokens: int = 0
     cached_tokens: int = 0
     output_tokens: int = 0
     reasoning_tokens: int = 0
     total_tokens: int = 0
+    cache_write_tokens: int = 0
 
     @classmethod
     def empty(cls) -> UsageBreakdown:
@@ -45,6 +46,7 @@ class UsageBreakdown:
         return cls(
             input_tokens=int(raw.get("input_tokens") or 0),
             cached_tokens=int(input_details.get("cached_tokens") or 0),
+            cache_write_tokens=int(input_details.get("cache_write_tokens") or 0),
             output_tokens=int(raw.get("output_tokens") or 0),
             reasoning_tokens=int(output_details.get("reasoning_tokens") or 0),
             total_tokens=int(raw.get("total_tokens") or 0),
@@ -55,6 +57,7 @@ class UsageBreakdown:
         return UsageBreakdown(
             input_tokens=self.input_tokens,
             cached_tokens=self.cached_tokens,
+            cache_write_tokens=self.cache_write_tokens,
             output_tokens=self.output_tokens,
             reasoning_tokens=self.reasoning_tokens,
             total_tokens=total,
@@ -64,6 +67,7 @@ class UsageBreakdown:
         return {
             "input_tokens": self.input_tokens,
             "cached_tokens": self.cached_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
             "output_tokens": self.output_tokens,
             "reasoning_tokens": self.reasoning_tokens,
             "total_tokens": self.total_tokens or (self.input_tokens + self.output_tokens),
@@ -167,6 +171,7 @@ class ModelStats:
     nominal_usd: float = 0.0
     developer_usd: float = 0.0
     openai_usd: float = 0.0
+    cache_write_tokens: int = 0
 
     def to_dict(self) -> JsonDict:
         return {
@@ -175,6 +180,7 @@ class ModelStats:
             "errors": self.errors,
             "input_tokens": self.input_tokens,
             "cached_tokens": self.cached_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
             "output_tokens": self.output_tokens,
             "reasoning_tokens": self.reasoning_tokens,
             "total_tokens": self.total_tokens,
@@ -216,6 +222,9 @@ class StatsSnapshot:
     developer_requests: int = 0
     unknown_payer_requests: int = 0
     by_model: dict[str, ModelStats] = field(default_factory=dict)
+    cache_write_tokens: int = 0
+    prompt_cache_shards: int = 0
+    prompt_cache_target_rpm_per_shard: int | None = None
 
     def to_dict(self) -> JsonDict:
         return {
@@ -233,6 +242,7 @@ class StatsSnapshot:
             "estimated_finished_at": self.estimated_finished_at,
             "input_tokens": self.input_tokens,
             "cached_tokens": self.cached_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
             "output_tokens": self.output_tokens,
             "reasoning_tokens": self.reasoning_tokens,
             "total_tokens": self.total_tokens,
@@ -246,5 +256,7 @@ class StatsSnapshot:
             "openai_requests": self.openai_requests,
             "developer_requests": self.developer_requests,
             "unknown_payer_requests": self.unknown_payer_requests,
+            "prompt_cache_shards": self.prompt_cache_shards,
+            "prompt_cache_target_rpm_per_shard": self.prompt_cache_target_rpm_per_shard,
             "by_model": {model: stats.to_dict() for model, stats in self.by_model.items()},
         }

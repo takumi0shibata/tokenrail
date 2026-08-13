@@ -81,6 +81,25 @@ def _serialize_response(response: Any) -> JsonDict:
     raise TypeError(f"Unsupported response type: {type(response)!r}")
 
 
+def _merge_prompt_cache_options(extra: JsonDict, prompt_cache_options: JsonDict | None) -> JsonDict:
+    if prompt_cache_options is None:
+        return extra
+    merged = dict(extra)
+    raw_extra_body = merged.get("extra_body")
+    if raw_extra_body is None:
+        extra_body: JsonDict = {}
+    elif isinstance(raw_extra_body, dict):
+        extra_body = dict(raw_extra_body)
+    else:
+        raise ValueError("extra_body must be a dict when prompt_cache_options is used")
+    existing = extra_body.get("prompt_cache_options")
+    if existing is not None and existing != prompt_cache_options:
+        raise ValueError("prompt_cache_options conflicts with extra_body.prompt_cache_options")
+    extra_body["prompt_cache_options"] = prompt_cache_options
+    merged["extra_body"] = extra_body
+    return merged
+
+
 class OpenAIProvider(BaseProvider):
     """Executes requests against the OpenAI Responses API.
 
@@ -169,6 +188,8 @@ class OpenAIProvider(BaseProvider):
         metadata: JsonDict | None = None,
         service_tier: str | None = None,
         store: bool | None = None,
+        prompt_cache_key: str | None = None,
+        prompt_cache_options: JsonDict | None = None,
         **extra: Any,
     ) -> JsonDict:
         if "text_format" in extra:
@@ -205,7 +226,9 @@ class OpenAIProvider(BaseProvider):
             payload["service_tier"] = service_tier
         if store is not None:
             payload["store"] = store
-        payload.update(extra)
+        if prompt_cache_key is not None:
+            payload["prompt_cache_key"] = prompt_cache_key
+        payload.update(_merge_prompt_cache_options(extra, prompt_cache_options))
         return payload
 
     def build_parse_payload(
@@ -223,6 +246,8 @@ class OpenAIProvider(BaseProvider):
         metadata: JsonDict | None = None,
         service_tier: str | None = None,
         store: bool | None = None,
+        prompt_cache_key: str | None = None,
+        prompt_cache_options: JsonDict | None = None,
         **extra: Any,
     ) -> JsonDict:
         if text_format is None:
@@ -256,7 +281,9 @@ class OpenAIProvider(BaseProvider):
             payload["service_tier"] = service_tier
         if store is not None:
             payload["store"] = store
-        payload.update(extra)
+        if prompt_cache_key is not None:
+            payload["prompt_cache_key"] = prompt_cache_key
+        payload.update(_merge_prompt_cache_options(extra, prompt_cache_options))
         return payload
 
     def _normalize_response(
@@ -311,6 +338,8 @@ class OpenAIProvider(BaseProvider):
         metadata: JsonDict | None = None,
         service_tier: str | None = None,
         store: bool | None = None,
+        prompt_cache_key: str | None = None,
+        prompt_cache_options: JsonDict | None = None,
         **extra: Any,
     ) -> NormalizedResponse:
         payload = self.build_payload(
@@ -325,6 +354,8 @@ class OpenAIProvider(BaseProvider):
             metadata=metadata,
             service_tier=service_tier,
             store=store,
+            prompt_cache_key=prompt_cache_key,
+            prompt_cache_options=prompt_cache_options,
             **extra,
         )
 
@@ -357,6 +388,8 @@ class OpenAIProvider(BaseProvider):
         metadata: JsonDict | None = None,
         service_tier: str | None = None,
         store: bool | None = None,
+        prompt_cache_key: str | None = None,
+        prompt_cache_options: JsonDict | None = None,
         **extra: Any,
     ) -> NormalizedResponse:
         payload = self.build_parse_payload(
@@ -372,6 +405,8 @@ class OpenAIProvider(BaseProvider):
             metadata=metadata,
             service_tier=service_tier,
             store=store,
+            prompt_cache_key=prompt_cache_key,
+            prompt_cache_options=prompt_cache_options,
             **extra,
         )
 

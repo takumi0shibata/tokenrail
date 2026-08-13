@@ -25,6 +25,7 @@ class ModelCapabilities:
     top_p: bool
     max_output_tokens: bool
     response_format: bool
+    prompt_cache_explicit: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +34,7 @@ class ModelPricing:
     cached_input_per_million: Decimal | None
     output_per_million: Decimal
     service_tier: str = "default"
+    cache_write_input_per_million: Decimal | None = None
 
 
 _CAPABILITY_RULES: list[tuple[tuple[str, ...], ModelCapabilities]] = [
@@ -45,6 +47,7 @@ _CAPABILITY_RULES: list[tuple[tuple[str, ...], ModelCapabilities]] = [
             top_p=True,
             max_output_tokens=True,
             response_format=True,
+            prompt_cache_explicit=True,
         ),
     ),
     (
@@ -81,9 +84,33 @@ _DEFAULT_CAPABILITIES = ModelCapabilities(
 )
 
 _PRICING_RULES: list[tuple[tuple[str, ...], ModelPricing]] = [
-    (("gpt-5.6-terra",), ModelPricing(Decimal("2.00"), Decimal("0.20"), Decimal("12.00"))),
-    (("gpt-5.6-luna",), ModelPricing(Decimal("0.20"), Decimal("0.02"), Decimal("1.20"))),
-    (("gpt-5.6-sol", "gpt-5.6"), ModelPricing(Decimal("5.00"), Decimal("0.50"), Decimal("30.00"))),
+    (
+        ("gpt-5.6-terra",),
+        ModelPricing(
+            Decimal("2.50"),
+            Decimal("0.25"),
+            Decimal("15.00"),
+            cache_write_input_per_million=Decimal("3.125"),
+        ),
+    ),
+    (
+        ("gpt-5.6-luna",),
+        ModelPricing(
+            Decimal("1.00"),
+            Decimal("0.10"),
+            Decimal("6.00"),
+            cache_write_input_per_million=Decimal("1.25"),
+        ),
+    ),
+    (
+        ("gpt-5.6-sol", "gpt-5.6"),
+        ModelPricing(
+            Decimal("5.00"),
+            Decimal("0.50"),
+            Decimal("30.00"),
+            cache_write_input_per_million=Decimal("6.25"),
+        ),
+    ),
     (("gpt-5.5",), ModelPricing(Decimal("5.00"), Decimal("0.50"), Decimal("30.00"))),
     (("gpt-5.4-mini",), ModelPricing(Decimal("0.750"), Decimal("0.075"), Decimal("4.500"))),
     (("gpt-5.4-nano",), ModelPricing(Decimal("0.20"), Decimal("0.02"), Decimal("1.25"))),
@@ -213,11 +240,13 @@ def calculate_cost(
     if pricing is None:
         return None
 
-    uncached_input = max(usage.input_tokens - usage.cached_tokens, 0)
+    ordinary_input = max(usage.input_tokens - usage.cached_tokens - usage.cache_write_tokens, 0)
     cached_rate = pricing.cached_input_per_million or Decimal("0")
+    cache_write_rate = pricing.cache_write_input_per_million or pricing.input_per_million
     total = (
-        (Decimal(uncached_input) * pricing.input_per_million)
+        (Decimal(ordinary_input) * pricing.input_per_million)
         + (Decimal(usage.cached_tokens) * cached_rate)
+        + (Decimal(usage.cache_write_tokens) * cache_write_rate)
         + (Decimal(usage.output_tokens) * pricing.output_per_million)
     ) / Decimal("1000000")
 

@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Opt-in GPT-5.6 explicit prompt-cache planning in `BatchExecutor`, including
+  longest-common-prefix detection at content-block boundaries.
+- Deterministic `prompt_cache_key` sharding with automatic shard counts and a
+  rolling per-key submit limit (15 RPM by default).
+- Public `PromptCacheConfig`, `cache_write_tokens` usage metrics, and prompt
+  cache configuration fields on `StatsSnapshot`.
+
+### Changed
+
+- GPT-5.6 cache writes are included in cost estimates at 1.25 times the normal
+  input rate.
+- GPT-5.6 Terra and Luna prices now match the current OpenAI base pricing.
+- Progress output reports cache reads, cache writes, and active shard counts.
+
 ## [2.0.0] - 2026-08-03
 
 ### Added

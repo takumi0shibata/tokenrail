@@ -140,6 +140,134 @@ class OpenAIProviderTests(unittest.TestCase):
         self.assertEqual(response.usage.cached_tokens, 2)
         self.assertGreater(response.cost.developer_usd, 0.0)
 
+    def test_prompt_cache_options_are_merged_into_extra_body_for_create(self):
+        payload = {
+            "id": "resp_cache",
+            "model": "gpt-5.6",
+            "output_text": "done",
+            "usage": {
+                "input_tokens": 1_500,
+                "input_tokens_details": {"cached_tokens": 500, "cache_write_tokens": 700},
+                "output_tokens": 10,
+                "total_tokens": 1_510,
+            },
+        }
+        api = _FakeResponsesAPI([payload])
+        provider = OpenAIProvider(client=_FakeClient(api))
+
+        response = provider.create(
+            model="gpt-5.6",
+            input="hello",
+            prompt_cache_key="cache:shard-0",
+            prompt_cache_options={"mode": "explicit"},
+            extra_body={"custom": True},
+        )
+
+        self.assertEqual(api.calls[0]["prompt_cache_key"], "cache:shard-0")
+        self.assertEqual(
+            api.calls[0]["extra_body"],
+            {"custom": True, "prompt_cache_options": {"mode": "explicit"}},
+        )
+        self.assertEqual(response.usage.cache_write_tokens, 700)
+
+    def test_prompt_cache_options_are_merged_for_parse_and_conflicts_are_rejected(self):
+        class ParsedShape:
+            pass
+
+        payload = {
+            "id": "resp_cache_parse",
+            "model": "gpt-5.6",
+            "output_text": "{}",
+            "usage": {"input_tokens": 1_024, "output_tokens": 1, "total_tokens": 1_025},
+        }
+        api = _FakeResponsesAPI([payload])
+        provider = OpenAIProvider(client=_FakeClient(api))
+
+        provider.parse(
+            model="gpt-5.6",
+            input="hello",
+            text_format=ParsedShape,
+            prompt_cache_key="cache:shard-1",
+            prompt_cache_options={"mode": "explicit"},
+        )
+
+        self.assertEqual(api.parse_calls[0]["prompt_cache_key"], "cache:shard-1")
+        self.assertEqual(
+            api.parse_calls[0]["extra_body"],
+            {"prompt_cache_options": {"mode": "explicit"}},
+        )
+        with self.assertRaisesRegex(ValueError, "conflicts"):
+            provider.build_payload(
+                model="gpt-5.6",
+                input="hello",
+                prompt_cache_options={"mode": "explicit"},
+                extra_body={"prompt_cache_options": {"mode": "implicit"}},
+            )
+
+    def test_current_openai_sdk_preserves_explicit_cache_request_and_usage_fields(self):
+        import json
+
+        import httpx
+        from openai import OpenAI
+
+        captured = {}
+
+        def handler(request):
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={
+                    "id": "resp_sdk_cache",
+                    "object": "response",
+                    "created_at": 0,
+                    "status": "completed",
+                    "model": "gpt-5.6",
+                    "output": [],
+                    "parallel_tool_calls": True,
+                    "tool_choice": "auto",
+                    "tools": [],
+                    "usage": {
+                        "input_tokens": 1_500,
+                        "input_tokens_details": {"cached_tokens": 500, "cache_write_tokens": 700},
+                        "output_tokens": 0,
+                        "output_tokens_details": {"reasoning_tokens": 0},
+                        "total_tokens": 1_500,
+                    },
+                },
+            )
+
+        sdk_client = OpenAI(
+            api_key="sk-test",
+            base_url="https://example.test/v1",
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+        provider = OpenAIProvider(client=sdk_client)
+        response = provider.create(
+            model="gpt-5.6",
+            input=[
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "shared",
+                            "prompt_cache_breakpoint": {"mode": "explicit"},
+                        }
+                    ],
+                }
+            ],
+            prompt_cache_key="sdk:shard-0",
+            prompt_cache_options={"mode": "explicit"},
+        )
+
+        self.assertEqual(captured["body"]["prompt_cache_options"], {"mode": "explicit"})
+        self.assertEqual(
+            captured["body"]["input"][0]["content"][0]["prompt_cache_breakpoint"],
+            {"mode": "explicit"},
+        )
+        self.assertEqual(response.usage.cache_write_tokens, 700)
+
     def test_parse_uses_text_format_and_normalizes_parsed_output(self):
         class ParsedShape:
             pass
@@ -250,10 +378,10 @@ class OpenAIProviderTests(unittest.TestCase):
 
     def test_gpt56_catalog_prices_capabilities_and_alias(self):
         expected = {
-            "gpt-5.6-sol": ("5.00", "0.50", "30.00"),
-            "gpt-5.6": ("5.00", "0.50", "30.00"),
-            "gpt-5.6-terra": ("2.00", "0.20", "12.00"),
-            "gpt-5.6-luna": ("0.20", "0.02", "1.20"),
+            "gpt-5.6-sol": ("5.00", "0.50", "30.00", "6.25"),
+            "gpt-5.6": ("5.00", "0.50", "30.00", "6.25"),
+            "gpt-5.6-terra": ("2.50", "0.25", "15.00", "3.125"),
+            "gpt-5.6-luna": ("1.00", "0.10", "6.00", "1.25"),
         }
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -265,6 +393,7 @@ class OpenAIProviderTests(unittest.TestCase):
                         str(pricing.input_per_million),
                         str(pricing.cached_input_per_million),
                         str(pricing.output_per_million),
+                        str(pricing.cache_write_input_per_million),
                     ),
                     prices,
                 )
@@ -277,8 +406,8 @@ class OpenAIProviderTests(unittest.TestCase):
         usage = UsageBreakdown(input_tokens=2_000_000, cached_tokens=1_000_000, output_tokens=1_000_000)
         expected_costs = {
             "gpt-5.6-sol": 35.5,
-            "gpt-5.6-terra": 14.2,
-            "gpt-5.6-luna": 1.42,
+            "gpt-5.6-terra": 17.75,
+            "gpt-5.6-luna": 7.1,
         }
         for model, expected in expected_costs.items():
             cost = calculate_cost(model, usage, payer="developer")
@@ -291,8 +420,21 @@ class OpenAIProviderTests(unittest.TestCase):
             warnings.simplefilter("always")
             pricing = get_model_pricing("gpt-5.6-terra-2026-08-03")
         self.assertIsNotNone(pricing)
-        self.assertEqual(str(pricing.input_per_million), "2.00")
+        self.assertEqual(str(pricing.input_per_million), "2.50")
         self.assertEqual(caught, [])
+
+    def test_gpt56_cost_calculation_separates_cache_reads_and_writes(self):
+        usage = UsageBreakdown(
+            input_tokens=1_000_000,
+            cached_tokens=200_000,
+            cache_write_tokens=300_000,
+            output_tokens=100_000,
+        )
+
+        cost = calculate_cost("gpt-5.6-sol", usage, payer="developer")
+
+        self.assertIsNotNone(cost)
+        self.assertAlmostEqual(cost.nominal_usd, 7.475)
 
     def test_catalog_fallback_warning_is_emitted_once_per_model(self):
         model = "gpt-5.7-once-only"
