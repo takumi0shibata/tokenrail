@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - GPT-5.6 cache writes are included in cost estimates at 1.25 times the normal
   input rate.
-- GPT-5.6 Terra and Luna prices now match the current OpenAI base pricing.
+- GPT-5.6 Terra and Luna prices now match OpenAI's August 2026 price cuts,
+  including cached-input and 1.25-times cache-write rates.
 - Progress output reports cache reads, cache writes, and active shard counts.
 
 ## [2.0.0] - 2026-08-03

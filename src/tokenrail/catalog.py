@@ -87,19 +87,19 @@ _PRICING_RULES: list[tuple[tuple[str, ...], ModelPricing]] = [
     (
         ("gpt-5.6-terra",),
         ModelPricing(
-            Decimal("2.50"),
-            Decimal("0.25"),
-            Decimal("15.00"),
-            cache_write_input_per_million=Decimal("3.125"),
+            Decimal("2.00"),
+            Decimal("0.20"),
+            Decimal("12.00"),
+            cache_write_input_per_million=Decimal("2.50"),
         ),
     ),
     (
         ("gpt-5.6-luna",),
         ModelPricing(
-            Decimal("1.00"),
-            Decimal("0.10"),
-            Decimal("6.00"),
-            cache_write_input_per_million=Decimal("1.25"),
+            Decimal("0.20"),
+            Decimal("0.02"),
+            Decimal("1.20"),
+            cache_write_input_per_million=Decimal("0.25"),
         ),
     ),
     (

@@ -380,8 +380,8 @@ class OpenAIProviderTests(unittest.TestCase):
         expected = {
             "gpt-5.6-sol": ("5.00", "0.50", "30.00", "6.25"),
             "gpt-5.6": ("5.00", "0.50", "30.00", "6.25"),
-            "gpt-5.6-terra": ("2.50", "0.25", "15.00", "3.125"),
-            "gpt-5.6-luna": ("1.00", "0.10", "6.00", "1.25"),
+            "gpt-5.6-terra": ("2.00", "0.20", "12.00", "2.50"),
+            "gpt-5.6-luna": ("0.20", "0.02", "1.20", "0.25"),
         }
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -406,8 +406,8 @@ class OpenAIProviderTests(unittest.TestCase):
         usage = UsageBreakdown(input_tokens=2_000_000, cached_tokens=1_000_000, output_tokens=1_000_000)
         expected_costs = {
             "gpt-5.6-sol": 35.5,
-            "gpt-5.6-terra": 17.75,
-            "gpt-5.6-luna": 7.1,
+            "gpt-5.6-terra": 14.2,
+            "gpt-5.6-luna": 1.42,
         }
         for model, expected in expected_costs.items():
             cost = calculate_cost(model, usage, payer="developer")
@@ -420,7 +420,7 @@ class OpenAIProviderTests(unittest.TestCase):
             warnings.simplefilter("always")
             pricing = get_model_pricing("gpt-5.6-terra-2026-08-03")
         self.assertIsNotNone(pricing)
-        self.assertEqual(str(pricing.input_per_million), "2.50")
+        self.assertEqual(str(pricing.input_per_million), "2.00")
         self.assertEqual(caught, [])
 
     def test_gpt56_cost_calculation_separates_cache_reads_and_writes(self):
@@ -430,11 +430,15 @@ class OpenAIProviderTests(unittest.TestCase):
             cache_write_tokens=300_000,
             output_tokens=100_000,
         )
-
-        cost = calculate_cost("gpt-5.6-sol", usage, payer="developer")
-
-        self.assertIsNotNone(cost)
-        self.assertAlmostEqual(cost.nominal_usd, 7.475)
+        expected_costs = {
+            "gpt-5.6-sol": 7.475,
+            "gpt-5.6-terra": 2.99,
+            "gpt-5.6-luna": 0.299,
+        }
+        for model, expected in expected_costs.items():
+            cost = calculate_cost(model, usage, payer="developer")
+            self.assertIsNotNone(cost)
+            self.assertAlmostEqual(cost.nominal_usd, expected)
 
     def test_catalog_fallback_warning_is_emitted_once_per_model(self):
         model = "gpt-5.7-once-only"
