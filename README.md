@@ -18,10 +18,8 @@ It focuses on:
 
 Fully typed (PEP 561), supports Python 3.10+.
 
-The library is in beta. Starting with 0.4.0, releases use 0.x version numbers
-while the public API is still evolving; breaking changes may occur between
-minor versions. The earlier 1.x and 2.x releases were labeled stable
-prematurely. This version reset continues development from the existing code.
+The library is in beta. The public API is still evolving, and breaking changes
+may occur between 0.x minor versions.
 
 ## Installation
 
@@ -30,21 +28,6 @@ uv add tokenrail
 # or
 pip install tokenrail
 ```
-
-After 0.4.0 is published, migrate an existing 1.x or 2.x installation by
-replacing its version constraint and updating the lockfile:
-
-```bash
-uv add 'tokenrail>=0.4.0,<1'
-# or
-pip install --upgrade 'tokenrail>=0.4.0,<1'
-```
-
-Publishing 0.x alone does not make it the default installation while higher
-versions remain available. The legacy 1.0.0, 1.1.0, and 2.0.0 releases should
-be [yanked on PyPI](https://docs.pypi.org/project-management/yanking/) after
-0.4.0 is published. Yanking preserves their history and exact-version installs.
-Existing installations and lockfiles still need an explicit migration.
 
 To track an unreleased revision instead, depend on the Git repository directly:
 

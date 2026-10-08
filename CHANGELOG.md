@@ -10,6 +10,8 @@ designation was premature and does not describe the project's current status.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-08
+
 ### Added
 
 - GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna catalog entries with
