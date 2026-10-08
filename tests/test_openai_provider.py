@@ -158,12 +158,12 @@ class OpenAIProviderTests(unittest.TestCase):
         response = provider.create(
             model="gpt-5.6",
             input="hello",
-            prompt_cache_key="cache:shard-0",
+            prompt_cache_key="customer-1",
             prompt_cache_options={"mode": "explicit"},
             extra_body={"custom": True},
         )
 
-        self.assertEqual(api.calls[0]["prompt_cache_key"], "cache:shard-0")
+        self.assertEqual(api.calls[0]["prompt_cache_key"], "customer-1")
         self.assertEqual(
             api.calls[0]["extra_body"],
             {"custom": True, "prompt_cache_options": {"mode": "explicit"}},
@@ -187,11 +187,11 @@ class OpenAIProviderTests(unittest.TestCase):
             model="gpt-5.6",
             input="hello",
             text_format=ParsedShape,
-            prompt_cache_key="cache:shard-1",
+            prompt_cache_key="customer-2",
             prompt_cache_options={"mode": "explicit"},
         )
 
-        self.assertEqual(api.parse_calls[0]["prompt_cache_key"], "cache:shard-1")
+        self.assertEqual(api.parse_calls[0]["prompt_cache_key"], "customer-2")
         self.assertEqual(
             api.parse_calls[0]["extra_body"],
             {"prompt_cache_options": {"mode": "explicit"}},
@@ -204,69 +204,66 @@ class OpenAIProviderTests(unittest.TestCase):
                 extra_body={"prompt_cache_options": {"mode": "implicit"}},
             )
 
-    def test_current_openai_sdk_preserves_explicit_cache_request_and_usage_fields(self):
-        import json
+    def test_extra_body_conflicts_are_rejected_before_create_or_parse(self):
+        class ParsedShape:
+            pass
 
-        import httpx
-        from openai import OpenAI
-
-        captured = {}
-
-        def handler(request):
-            captured["body"] = json.loads(request.content)
-            return httpx.Response(
-                200,
-                json={
-                    "id": "resp_sdk_cache",
-                    "object": "response",
-                    "created_at": 0,
-                    "status": "completed",
-                    "model": "gpt-5.6",
-                    "output": [],
-                    "parallel_tool_calls": True,
-                    "tool_choice": "auto",
-                    "tools": [],
-                    "usage": {
-                        "input_tokens": 1_500,
-                        "input_tokens_details": {"cached_tokens": 500, "cache_write_tokens": 700},
-                        "output_tokens": 0,
-                        "output_tokens_details": {"reasoning_tokens": 0},
-                        "total_tokens": 1_500,
-                    },
-                },
+        api = _FakeResponsesAPI([])
+        provider = OpenAIProvider(client=_FakeClient(api))
+        cases = [
+            ("model", "gpt-5.6", "gpt-4.1"),
+            ("input", "hello", "different input"),
+            ("instructions", "shared instructions", "different instructions"),
+            ("tools", [], [{"type": "web_search"}]),
+            ("prompt_cache_key", "customer-1", "customer-2"),
+            ("prompt_cache_retention", "24h", "in_memory"),
+            ("prompt_cache_options", {"mode": "explicit"}, {"mode": "implicit"}),
+            ("prompt_cache_options", {"mode": "explicit"}, None),
+        ]
+        for method_name in ("create", "parse"):
+            for field, value, override in cases:
+                kwargs = {"model": "gpt-5.6", "input": "hello", field: value, "extra_body": {field: override}}
+                if method_name == "parse":
+                    kwargs["text_format"] = ParsedShape
+                with self.subTest(method=method_name, field=field, override=override):
+                    with self.assertRaisesRegex(ValueError, f"{field} conflicts"):
+                        getattr(provider, method_name)(**kwargs)
+        with self.assertRaisesRegex(ValueError, "text_format conflicts"):
+            provider.parse(
+                model="gpt-5.6",
+                input="hello",
+                text_format=ParsedShape,
+                extra_body={"text": {"format": {"type": "text"}}},
             )
+        self.assertEqual(api.calls, [])
+        self.assertEqual(api.parse_calls, [])
 
-        sdk_client = OpenAI(
-            api_key="sk-test",
-            base_url="https://example.test/v1",
-            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    def test_matching_extra_body_values_and_extra_only_cache_options_are_preserved(self):
+        provider = OpenAIProvider(client=_FakeClient(_FakeResponsesAPI([])))
+        options = {"mode": "explicit", "ttl": "30m"}
+        extra_body = {"prompt_cache_key": "customer-1", "prompt_cache_options": options}
+        payload = provider.build_payload(
+            model="gpt-5.6", input="hello", prompt_cache_key="customer-1", extra_body=extra_body
         )
-        provider = OpenAIProvider(client=sdk_client)
-        response = provider.create(
+        self.assertEqual(payload["extra_body"], extra_body)
+
+        payload = provider.build_payload(
             model="gpt-5.6",
-            input=[
-                {
-                    "type": "message",
-                    "role": "developer",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": "shared",
-                            "prompt_cache_breakpoint": {"mode": "explicit"},
-                        }
-                    ],
-                }
-            ],
-            prompt_cache_key="sdk:shard-0",
-            prompt_cache_options={"mode": "explicit"},
+            input="hello",
+            prompt_cache_key="customer-1",
+            prompt_cache_options=options,
+            extra_body=extra_body,
         )
+        self.assertEqual(payload["extra_body"], extra_body)
+        self.assertEqual(extra_body, {"prompt_cache_key": "customer-1", "prompt_cache_options": options})
 
-        self.assertEqual(captured["body"]["prompt_cache_options"], {"mode": "explicit"})
-        self.assertEqual(
-            captured["body"]["input"][0]["content"][0]["prompt_cache_breakpoint"],
-            {"mode": "explicit"},
-        )
-        self.assertEqual(response.usage.cache_write_tokens, 700)
+    def test_invalid_extra_body_is_rejected_before_sending(self):
+        api = _FakeResponsesAPI([])
+        provider = OpenAIProvider(client=_FakeClient(api))
+        for extra_body in ([], "invalid", 1):
+            with self.subTest(extra_body=extra_body), self.assertRaisesRegex(ValueError, "extra_body must be a dict"):
+                provider.create(model="gpt-5.6", input="hello", extra_body=extra_body)
+        self.assertEqual(api.calls, [])
 
     def test_parse_uses_text_format_and_normalizes_parsed_output(self):
         class ParsedShape:

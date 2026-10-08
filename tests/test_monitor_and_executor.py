@@ -195,7 +195,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
         self.assertEqual(output[1], "   PAYER: openai — costs are covered")
         self.assertIn("0001  ok", output[2])
         self.assertIn("model=gpt-5.6-terra", output[2])
-        self.assertIn("1.3k tok (+20 reasoning) (40% cached)", output[2])
+        self.assertIn("1.3k tok (+20 reasoning) (40% cached / 0% cache-write)", output[2])
         self.assertIn("$0.100000", output[2])
         self.assertIn("oai", output[2])
         self.assertIn("1.4s", output[2])

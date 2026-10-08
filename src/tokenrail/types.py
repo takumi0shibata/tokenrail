@@ -223,8 +223,6 @@ class StatsSnapshot:
     unknown_payer_requests: int = 0
     by_model: dict[str, ModelStats] = field(default_factory=dict)
     cache_write_tokens: int = 0
-    prompt_cache_shards: int = 0
-    prompt_cache_target_rpm_per_shard: int | None = None
 
     def to_dict(self) -> JsonDict:
         return {
@@ -256,7 +254,5 @@ class StatsSnapshot:
             "openai_requests": self.openai_requests,
             "developer_requests": self.developer_requests,
             "unknown_payer_requests": self.unknown_payer_requests,
-            "prompt_cache_shards": self.prompt_cache_shards,
-            "prompt_cache_target_rpm_per_shard": self.prompt_cache_target_rpm_per_shard,
             "by_model": {model: stats.to_dict() for model, stats in self.by_model.items()},
         }

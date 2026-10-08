@@ -96,8 +96,6 @@ class RollingMetricsMonitor:
         total_requests: int,
         todo_requests: int,
         skipped_requests: int,
-        prompt_cache_shards: int = 0,
-        prompt_cache_target_rpm_per_shard: int | None = None,
     ) -> StatsSnapshot:
         with self._lock:
             now = time.time()
@@ -105,8 +103,6 @@ class RollingMetricsMonitor:
             self._snapshot.todo_requests = todo_requests
             self._snapshot.skipped_requests = skipped_requests
             self._snapshot.remaining_requests = todo_requests
-            self._snapshot.prompt_cache_shards = prompt_cache_shards
-            self._snapshot.prompt_cache_target_rpm_per_shard = prompt_cache_target_rpm_per_shard
             self._snapshot.started_at = now
             self._snapshot.last_updated_at = now
             self._snapshot.elapsed_seconds = 0.0
@@ -184,8 +180,6 @@ class RollingMetricsMonitor:
             openai_requests=self._snapshot.openai_requests,
             developer_requests=self._snapshot.developer_requests,
             unknown_payer_requests=self._snapshot.unknown_payer_requests,
-            prompt_cache_shards=self._snapshot.prompt_cache_shards,
-            prompt_cache_target_rpm_per_shard=self._snapshot.prompt_cache_target_rpm_per_shard,
             by_model={model: ModelStats(**stats.to_dict()) for model, stats in self._snapshot.by_model.items()},
         )
 
@@ -330,17 +324,11 @@ class RollingMetricsMonitor:
         return "".join(codes) + text + _ANSI_RESET
 
     def format_header(self, snapshot: StatsSnapshot) -> str:
-        cache_suffix = ""
-        if snapshot.prompt_cache_shards and snapshot.prompt_cache_target_rpm_per_shard is not None:
-            cache_suffix = (
-                f" · prompt cache {snapshot.prompt_cache_shards} shards "
-                f"@ {snapshot.prompt_cache_target_rpm_per_shard} rpm/key"
-            )
         if snapshot.skipped_requests == 0:
-            return f"tokenrail · {snapshot.total_requests} requests{cache_suffix}"
+            return f"tokenrail · {snapshot.total_requests} requests"
         return (
             f"tokenrail · {snapshot.total_requests} requests "
-            f"({snapshot.todo_requests} todo / {snapshot.skipped_requests} skipped){cache_suffix}"
+            f"({snapshot.todo_requests} todo / {snapshot.skipped_requests} skipped)"
         )
 
     def format_request(
@@ -366,10 +354,7 @@ class RollingMetricsMonitor:
         if response.usage.input_tokens > 0:
             cached_pct = round(response.usage.cached_tokens / response.usage.input_tokens * 100)
             cache_write_pct = round(response.usage.cache_write_tokens / response.usage.input_tokens * 100)
-            if snapshot.prompt_cache_shards or response.usage.cache_write_tokens:
-                token_text += f" ({cached_pct}% cached / {cache_write_pct}% cache-write)"
-            else:
-                token_text += f" ({cached_pct}% cached)"
+            token_text += f" ({cached_pct}% cached / {cache_write_pct}% cache-write)"
 
         cost_text = _format_usd(response.cost.nominal_usd, digits=6) if response.cost is not None else "$—"
         payer = self._observed_payer(response)
@@ -406,7 +391,7 @@ class RollingMetricsMonitor:
         else:
             openai_pct = "—"
         cache_text = ""
-        if snapshot.prompt_cache_shards and snapshot.input_tokens:
+        if snapshot.input_tokens:
             read_pct = round(snapshot.cached_tokens / snapshot.input_tokens * 100)
             write_pct = round(snapshot.cache_write_tokens / snapshot.input_tokens * 100)
             cache_text = f" · cache r{read_pct}%/w{write_pct}%"
@@ -434,9 +419,9 @@ class RollingMetricsMonitor:
             f"openai {_format_usd(snapshot.openai_usd, digits=3)} ({openai_pct}) / "
             f"developer {_format_usd(snapshot.developer_usd, digits=3)} ({developer_pct})"
         )
-        if snapshot.prompt_cache_shards:
+        if snapshot.cached_tokens or snapshot.cache_write_tokens:
             lines.append(
-                f"Prompt cache: {snapshot.prompt_cache_shards} shards · "
+                "Prompt cache: "
                 f"{_format_tokens(snapshot.cached_tokens)} read / "
                 f"{_format_tokens(snapshot.cache_write_tokens)} written"
             )

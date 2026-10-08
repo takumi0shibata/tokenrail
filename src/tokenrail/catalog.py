@@ -25,7 +25,6 @@ class ModelCapabilities:
     top_p: bool
     max_output_tokens: bool
     response_format: bool
-    prompt_cache_explicit: bool = False
     supported_reasoning_efforts: tuple[str, ...] | None = None
     sampling_requires_no_reasoning: bool = False
 
@@ -49,7 +48,6 @@ _CAPABILITY_RULES: list[tuple[tuple[str, ...], ModelCapabilities]] = [
             top_p=False,
             max_output_tokens=True,
             response_format=True,
-            prompt_cache_explicit=True,
             supported_reasoning_efforts=("low", "medium", "high", "xhigh", "max"),
         ),
     ),
@@ -62,7 +60,6 @@ _CAPABILITY_RULES: list[tuple[tuple[str, ...], ModelCapabilities]] = [
             top_p=True,
             max_output_tokens=True,
             response_format=True,
-            prompt_cache_explicit=True,
             supported_reasoning_efforts=("none", "low", "medium", "high", "xhigh", "max"),
             sampling_requires_no_reasoning=True,
         ),
@@ -76,7 +73,6 @@ _CAPABILITY_RULES: list[tuple[tuple[str, ...], ModelCapabilities]] = [
             top_p=True,
             max_output_tokens=True,
             response_format=True,
-            prompt_cache_explicit=True,
         ),
     ),
     (

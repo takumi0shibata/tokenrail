@@ -10,15 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna catalog entries with
-  standard-tier base prices, cache-write rates, and explicit prompt caching.
+  standard-tier base prices and cache-write rates.
 - GPT-6 reasoning-effort and sampling-parameter validation for both
   `responses.create(...)` and `responses.parse(...)`.
-- Opt-in GPT-5.6 explicit prompt-cache planning in `BatchExecutor`, including
-  longest-common-prefix detection at content-block boundaries.
-- Deterministic `prompt_cache_key` sharding with automatic shard counts and a
-  rolling per-key submit limit (15 RPM by default).
-- Public `PromptCacheConfig`, `cache_write_tokens` usage metrics, and prompt
-  cache configuration fields on `StatsSnapshot`.
+- OpenAI prompt-cache settings are forwarded unchanged for both
+  `responses.create(...)` and `responses.parse(...)`.
+- Conflicting request fields in `extra_body` are rejected before sending.
+- `cache_write_tokens` usage metrics on responses and batch/model statistics.
 
 ### Changed
 
@@ -29,7 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   input rate.
 - GPT-5.6 Terra and Luna prices now match OpenAI's August 2026 price cuts,
   including cached-input and 1.25-times cache-write rates.
-- Progress output reports cache reads, cache writes, and active shard counts.
+- Prompt caching uses only OpenAI's standard request settings; tokenrail does
+  not plan prefixes, generate or shard keys, prewarm caches, or impose per-key
+  submit limits. `BatchExecutor.prompt_cache` and `PromptCacheConfig` are removed.
+- Progress output reports cache reads and writes independently of request settings.
 
 ## [2.0.0] - 2026-08-03
 

@@ -12,7 +12,7 @@ It focuses on:
 - thread-based OpenAI batch execution
 - structured output parsing for Pydantic models
 - client-side RPM / TPM submit throttling
-- GPT-5.6 and GPT-6 explicit prompt caching with deterministic cache-key sharding
+- OpenAI prompt-cache settings passed through unchanged, with read/write usage tracking
 - per-model token / cost monitoring with ETA progress reporting
 - resumable JSONL and per-request result writing
 
@@ -85,68 +85,85 @@ stats = executor.run(items)
 print(stats.to_dict())
 ```
 
-## Prompt cache auto-sharding
+## Prompt caching
 
-GPT-5.6 and later can cache an exact reusable prompt prefix at an explicit
-breakpoint. Enable tokenrail's opt-in planner to find the longest common
-message/content-block prefix, mark it for explicit-only caching, and partition
-the batch over stable physical cache keys:
+tokenrail forwards OpenAI's prompt-cache settings and input content as supplied.
+It does not detect shared prefixes, insert breakpoints, generate or split keys,
+prewarm caches, or impose cache-specific submit limits. These settings work with
+both `responses.create(...)` and `responses.parse(...)`, including batch items.
+
+| Setting | Purpose |
+| --- | --- |
+| `prompt_cache_options` | Cache mode, TTL, prewarming, and diagnostics where supported |
+| `prompt_cache_breakpoint` inside `input` content | The end of a reusable prefix |
+| `prompt_cache_key` | A caller-supplied key, preserved exactly |
+| `prompt_cache_retention` | Retention for older models that support it |
+
+Omitting these settings keeps the OpenAI API defaults, including implicit
+caching. On GPT-5.6 and later, writing an eligible prefix costs 1.25 times the
+ordinary input rate, so a prefix that is never reused can cost more than an
+uncached input. Setting support and cache eligibility depend on the model.
+
+Use the API defaults:
 
 ```python
-from tokenrail import BatchExecutor, PromptCacheConfig, RailClient
-from tokenrail.executor import batch_items_from_queries
+from tokenrail import RailClient
 
 client = RailClient.openai()
-
-items = batch_items_from_queries(
-    {
-        "paper-1": "Summarize paper one.",
-        "paper-2": "Summarize paper two.",
-    },
-    model="gpt-5.6-terra",
-    # In a real workload this reusable prefix must render to at least 1,024 tokens.
-    instructions="Follow the shared rubric and examples: ...",
-)
-
-stats = BatchExecutor(
-    client=client,
-    max_workers=32,
-    max_rpm=120,
-    prompt_cache="auto",
-).run(items)
-
-print(stats.prompt_cache_shards)       # 8
-print(stats.cached_tokens)             # tokens read from cache
-print(stats.cache_write_tokens)        # tokens newly written to cache
+response = client.responses.create(model="gpt-6.1-sol", input="Summarize this paper.")
 ```
 
-Auto mode computes `ceil(max_rpm / 15)`, maps each stable `BatchItem.id` to a
-shard with SHA-256, and enforces a rolling 15 RPM submit limit on every
-physical key. To supply a logical key, override the RPM estimate, or set the
-shard count directly, pass a configuration object:
+Cache only a reusable prefix on GPT-5.6 and later. Put the shared content in its
+own block and mark its end; content after the breakpoint stays outside the cache
+write. The prefix must render to at least 1,024 visible input tokens. Top-level
+`instructions` cannot contain a breakpoint, so supply reusable instructions in
+a developer content block:
 
 ```python
-prompt_cache = PromptCacheConfig(
-    base_key="paper-summary-v3",
-    shards=8,                    # "auto" by default
-    expected_rpm=None,           # falls back to BatchExecutor.max_rpm
-    target_rpm_per_shard=15,
+from tokenrail import BatchExecutor, batch_items_from_queries
+
+shared_block = {
+    "type": "input_text",
+    "text": "Shared rubric, examples, and reference material ...",  # At least 1,024 tokens.
+    "prompt_cache_breakpoint": {"mode": "explicit"},
+}
+items = batch_items_from_queries(
+    {
+        item_id: [
+            {"role": "developer", "content": [shared_block]},
+            {"role": "user", "content": question},
+        ]
+        for item_id, question in {
+            "paper-1": "Summarize paper one.",
+            "paper-2": "Summarize paper two.",
+        }.items()
+    },
+    model="gpt-6.1-sol",
+    prompt_cache_options={"mode": "explicit"},
+)
+stats = BatchExecutor(client=client, max_workers=16, max_rpm=120).run(items)
+print(stats.cached_tokens)       # Tokens read from cache.
+print(stats.cache_write_tokens)  # Tokens newly written to cache.
+```
+
+Avoid prompt-cache reads and writes on GPT-5.6 and later by using explicit mode
+with no breakpoints:
+
+```python
+response = client.responses.create(
+    model="gpt-6.1-sol",
+    input="A one-off prompt ...",
+    prompt_cache_options={"mode": "explicit"},
 )
 ```
 
-The planner deliberately works at content-block boundaries, not in the middle
-of strings. A batch must use one supported OpenAI GPT-5.6 or GPT-6 model and one shared request
-configuration. Stateful inputs such as `previous_response_id`, batches without
-a common cacheable block, and inputs that already contain explicit cache
-configuration are rejected before any API request is sent. Shared top-level
-`instructions` are moved to a leading developer `input_text` block so the
-prefix can be marked explicitly.
-
-The OpenAI service still requires an exact prefix of at least 1,024 tokens.
-Sharding improves cache routing; it does not relax ordinary API RPM/TPM limits,
-and excess shards duplicate the initial cache write. See the
-[OpenAI prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching)
-for the authoritative behavior.
+Choose keys, breakpoints, and reuse according to your workload. When supplying a
+key, keep it stable across related requests. tokenrail records cache read/write
+tokens and estimates their costs; it does not guarantee a hit or a saving.
+Conflicting values supplied in normal request arguments and `extra_body` raise
+`ValueError` before sending. `store=False` controls response storage, not prompt
+caching. See the [OpenAI prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching)
+for current model support, pricing, and cache lifetime.
 
 ## Structured output batches
 
@@ -217,7 +234,7 @@ If you use a custom `projector` with `ResultsJsonlSink`, make sure it keeps an `
 metrics separately:
 
 ```text
-tokenrail · 100 requests · prompt cache 7 shards @ 15 rpm/key
+tokenrail · 100 requests
    PAYER: openai — costs are covered
   0001  ok   req-0001      model=gpt-5.6-terra  1.3k tok (40% cached / 0% cache-write)  $0.002000  oai  1.4s
 ── 50/100 · 50% · 00:00:14 · ETA 00:00:14 · 58 rpm · 74k tpm · $0.100 (oai 100% / dev $0.000) · cache r40%/w2%
@@ -225,7 +242,7 @@ tokenrail · 100 requests · prompt cache 7 shards @ 15 rpm/key
   0053  ok   req-0053      1.2k tok (38% cached / 0% cache-write)  $0.001900  DEV  1.1s
 Done 100/100 · 99 ok / 1 errors · 00:00:29
 Total $0.198 — openai $0.104 (53%) / developer $0.094 (47%)
-Prompt cache: 7 shards · 48k read / 2.4k written
+Prompt cache: 48k read / 2.4k written
 Payer switches: 1
 ```
 
