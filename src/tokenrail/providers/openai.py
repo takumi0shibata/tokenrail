@@ -173,6 +173,16 @@ class OpenAIProvider(BaseProvider):
         for name, value, supported in checks:
             if value is not None and not supported:
                 raise ValueError(f"{name} is not supported for model {model}")
+        if (
+            reasoning_effort is not None
+            and capabilities.supported_reasoning_efforts is not None
+            and reasoning_effort not in capabilities.supported_reasoning_efforts
+        ):
+            raise ValueError(f"reasoning_effort={reasoning_effort!r} is not supported for model {model}")
+        if capabilities.sampling_requires_no_reasoning and reasoning_effort != "none":
+            for name, value in (("temperature", temperature), ("top_p", top_p)):
+                if value is not None:
+                    raise ValueError(f"{name} requires reasoning_effort='none' for model {model}")
 
     def build_payload(
         self,

@@ -378,8 +378,8 @@ class OpenAIProviderTests(unittest.TestCase):
 
     def test_gpt56_catalog_prices_capabilities_and_alias(self):
         expected = {
-            "gpt-5.6-sol": ("5.00", "0.50", "30.00", "6.25"),
-            "gpt-5.6": ("5.00", "0.50", "30.00", "6.25"),
+            "gpt-5.6-sol": ("4.00", "0.40", "20.00", "5.00"),
+            "gpt-5.6": ("4.00", "0.40", "20.00", "5.00"),
             "gpt-5.6-terra": ("2.00", "0.20", "12.00", "2.50"),
             "gpt-5.6-luna": ("0.20", "0.02", "1.20", "0.25"),
         }
@@ -402,10 +402,79 @@ class OpenAIProviderTests(unittest.TestCase):
                 self.assertTrue(capabilities.verbosity)
         self.assertEqual(caught, [])
 
+    def test_gpt6_registered_models_estimate_cache_reads_writes_and_output(self):
+        usage = UsageBreakdown(
+            input_tokens=100_000,
+            cached_tokens=20_000,
+            cache_write_tokens=30_000,
+            output_tokens=10_000,
+        )
+        expected_costs = {
+            "gpt-6-astra": 1.395,
+            "gpt-6.1-sol": 0.277,
+            "gpt-6-sol": 0.279,
+            "gpt-6-luna": 0.01395,
+        }
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            for model, expected in expected_costs.items():
+                with self.subTest(model=model):
+                    cost = calculate_cost(model, usage, payer="developer")
+                    self.assertIsNotNone(cost)
+                    self.assertAlmostEqual(cost.nominal_usd, expected)
+                    self.assertAlmostEqual(cost.developer_usd, expected)
+                    self.assertEqual(cost.openai_usd, 0.0)
+        self.assertEqual(caught, [])
+
+    def test_gpt6_reasoning_settings_work_for_create_and_parse_payloads(self):
+        provider = OpenAIProvider(client=_FakeClient(_FakeResponsesAPI([])))
+        for builder, extra in ((provider.build_payload, {}), (provider.build_parse_payload, {"text_format": dict})):
+            for model in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"):
+                with self.subTest(builder=builder.__name__, model=model):
+                    for effort in ("low", "medium", "high", "xhigh", "max"):
+                        payload = builder(
+                            model=model,
+                            input="hello",
+                            reasoning_effort=effort,
+                            verbosity="low",
+                            max_output_tokens=100,
+                            **extra,
+                        )
+                        self.assertEqual(payload["reasoning"], {"effort": effort})
+                        self.assertEqual(payload["max_output_tokens"], 100)
+                    with self.assertRaisesRegex(ValueError, "reasoning_effort='minimal'.*not supported"):
+                        builder(model=model, input="hello", reasoning_effort="minimal", **extra)
+                    if model in ("gpt-6-astra", "gpt-6.1-sol"):
+                        with self.assertRaisesRegex(ValueError, "reasoning_effort='none'.*not supported"):
+                            builder(model=model, input="hello", reasoning_effort="none", **extra)
+                    else:
+                        payload = builder(model=model, input="hello", reasoning_effort="none", **extra)
+                        self.assertEqual(payload["reasoning"], {"effort": "none"})
+
+    def test_gpt6_sampling_parameters_are_checked_before_api_calls(self):
+        api = _FakeResponsesAPI([])
+        provider = OpenAIProvider(client=_FakeClient(api))
+        for send, extra in ((provider.create, {}), (provider.parse, {"text_format": dict})):
+            for model in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"):
+                for effort in (None, "medium"):
+                    for parameter, value in (("temperature", 0.0), ("top_p", 0.9)):
+                        with self.subTest(model=model, effort=effort, parameter=parameter, send=send.__name__):
+                            with self.assertRaisesRegex(ValueError, parameter):
+                                send(model=model, input="hello", reasoning_effort=effort, **{parameter: value}, **extra)
+        self.assertEqual(api.calls, [])
+        self.assertEqual(api.parse_calls, [])
+        for builder, extra in ((provider.build_payload, {}), (provider.build_parse_payload, {"text_format": dict})):
+            for model in ("gpt-6-sol", "gpt-6-luna"):
+                for parameter, value in (("temperature", 0.0), ("top_p", 0.9)):
+                    payload = builder(
+                        model=model, input="hello", reasoning_effort="none", **{parameter: value}, **extra
+                    )
+                    self.assertEqual(payload[parameter], value)
+
     def test_gpt56_cost_calculation_uses_base_prices(self):
         usage = UsageBreakdown(input_tokens=2_000_000, cached_tokens=1_000_000, output_tokens=1_000_000)
         expected_costs = {
-            "gpt-5.6-sol": 35.5,
+            "gpt-5.6-sol": 24.4,
             "gpt-5.6-terra": 14.2,
             "gpt-5.6-luna": 1.42,
         }
@@ -431,7 +500,7 @@ class OpenAIProviderTests(unittest.TestCase):
             output_tokens=100_000,
         )
         expected_costs = {
-            "gpt-5.6-sol": 7.475,
+            "gpt-5.6-sol": 5.58,
             "gpt-5.6-terra": 2.99,
             "gpt-5.6-luna": 0.299,
         }

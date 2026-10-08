@@ -26,6 +26,8 @@ class ModelCapabilities:
     max_output_tokens: bool
     response_format: bool
     prompt_cache_explicit: bool = False
+    supported_reasoning_efforts: tuple[str, ...] | None = None
+    sampling_requires_no_reasoning: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +40,33 @@ class ModelPricing:
 
 
 _CAPABILITY_RULES: list[tuple[tuple[str, ...], ModelCapabilities]] = [
+    (
+        ("gpt-6-astra", "gpt-6.1-sol"),
+        ModelCapabilities(
+            reasoning_effort=True,
+            verbosity=True,
+            temperature=False,
+            top_p=False,
+            max_output_tokens=True,
+            response_format=True,
+            prompt_cache_explicit=True,
+            supported_reasoning_efforts=("low", "medium", "high", "xhigh", "max"),
+        ),
+    ),
+    (
+        ("gpt-6-sol", "gpt-6-luna"),
+        ModelCapabilities(
+            reasoning_effort=True,
+            verbosity=True,
+            temperature=True,
+            top_p=True,
+            max_output_tokens=True,
+            response_format=True,
+            prompt_cache_explicit=True,
+            supported_reasoning_efforts=("none", "low", "medium", "high", "xhigh", "max"),
+            sampling_requires_no_reasoning=True,
+        ),
+    ),
     (
         ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6"),
         ModelCapabilities(
@@ -84,6 +113,44 @@ _DEFAULT_CAPABILITIES = ModelCapabilities(
 )
 
 _PRICING_RULES: list[tuple[tuple[str, ...], ModelPricing]] = [
+    # Standard-tier short-context rates verified on 2026-10-08:
+    # https://developers.openai.com/api/docs/pricing
+    (
+        ("gpt-6-astra",),
+        ModelPricing(
+            Decimal("10.00"),
+            Decimal("1.00"),
+            Decimal("50.00"),
+            cache_write_input_per_million=Decimal("12.50"),
+        ),
+    ),
+    (
+        ("gpt-6.1-sol",),
+        ModelPricing(
+            Decimal("2.00"),
+            Decimal("0.10"),
+            Decimal("10.00"),
+            cache_write_input_per_million=Decimal("2.50"),
+        ),
+    ),
+    (
+        ("gpt-6-sol",),
+        ModelPricing(
+            Decimal("2.00"),
+            Decimal("0.20"),
+            Decimal("10.00"),
+            cache_write_input_per_million=Decimal("2.50"),
+        ),
+    ),
+    (
+        ("gpt-6-luna",),
+        ModelPricing(
+            Decimal("0.10"),
+            Decimal("0.01"),
+            Decimal("0.50"),
+            cache_write_input_per_million=Decimal("0.125"),
+        ),
+    ),
     (
         ("gpt-5.6-terra",),
         ModelPricing(
@@ -105,10 +172,10 @@ _PRICING_RULES: list[tuple[tuple[str, ...], ModelPricing]] = [
     (
         ("gpt-5.6-sol", "gpt-5.6"),
         ModelPricing(
-            Decimal("5.00"),
-            Decimal("0.50"),
-            Decimal("30.00"),
-            cache_write_input_per_million=Decimal("6.25"),
+            Decimal("4.00"),
+            Decimal("0.40"),
+            Decimal("20.00"),
+            cache_write_input_per_million=Decimal("5.00"),
         ),
     ),
     (("gpt-5.5",), ModelPricing(Decimal("5.00"), Decimal("0.50"), Decimal("30.00"))),
@@ -218,8 +285,9 @@ def get_model_capabilities(model: str) -> ModelCapabilities:
 def get_model_pricing(model: str, service_tier: str = "default") -> ModelPricing | None:
     """Return per-million-token pricing for ``model``, or ``None`` if unknown.
 
-    The checked-in registry only carries default-tier prices; for other service
-    tiers the default-tier price is returned as an approximation.
+    The checked-in registry only carries default-tier base prices; long-context
+    premiums and regional uplifts are not applied. For other service tiers the
+    default-tier price is returned as an approximation.
     """
     _, pricing_match = _resolve_model_catalog(model)
     return pricing_match[1] if pricing_match is not None else None

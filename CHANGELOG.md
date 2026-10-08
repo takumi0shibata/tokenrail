@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna catalog entries with
+  standard-tier base prices, cache-write rates, and explicit prompt caching.
+- GPT-6 reasoning-effort and sampling-parameter validation for both
+  `responses.create(...)` and `responses.parse(...)`.
 - Opt-in GPT-5.6 explicit prompt-cache planning in `BatchExecutor`, including
   longest-common-prefix detection at content-block boundaries.
 - Deterministic `prompt_cache_key` sharding with automatic shard counts and a
@@ -18,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- GPT-5.6 Sol and the `gpt-5.6` alias use OpenAI's current promotional prices:
+  $4.00 input, $0.40 cached input, $5.00 cache writes, and $20.00 output per
+  million tokens, verified on October 8, 2026.
 - GPT-5.6 cache writes are included in cost estimates at 1.25 times the normal
   input rate.
 - GPT-5.6 Terra and Luna prices now match OpenAI's August 2026 price cuts,

@@ -44,6 +44,21 @@ def _shared_items(*, model: str = "gpt-5.6") -> list[BatchItem]:
 
 
 class PromptCachePlanningTests(unittest.TestCase):
+    def test_gpt6_models_support_explicit_prompt_cache_planning(self):
+        for model in ("gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"):
+            with self.subTest(model=model):
+                plan = build_prompt_cache_plan(
+                    _shared_items(model=model),
+                    config=PromptCacheConfig(base_key="gpt6-evaluation", shards=2),
+                    max_rpm=None,
+                    provider_name="openai",
+                )
+                for item in plan.items:
+                    self.assertEqual(item.request_kwargs["model"], model)
+                    self.assertEqual(item.request_kwargs["prompt_cache_options"], {"mode": "explicit"})
+                    content = item.request_kwargs["input"][0]["content"]
+                    self.assertEqual(content[0]["prompt_cache_breakpoint"], {"mode": "explicit"})
+
     def test_usage_breakdown_keeps_existing_positional_argument_order(self):
         usage = UsageBreakdown(10, 2, 3, 4, 13)
 

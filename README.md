@@ -12,7 +12,7 @@ It focuses on:
 - thread-based OpenAI batch execution
 - structured output parsing for Pydantic models
 - client-side RPM / TPM submit throttling
-- GPT-5.6 explicit prompt caching with deterministic cache-key sharding
+- GPT-5.6 and GPT-6 explicit prompt caching with deterministic cache-key sharding
 - per-model token / cost monitoring with ETA progress reporting
 - resumable JSONL and per-request result writing
 
@@ -135,7 +135,7 @@ prompt_cache = PromptCacheConfig(
 ```
 
 The planner deliberately works at content-block boundaries, not in the middle
-of strings. A batch must use one OpenAI GPT-5.6 model and one shared request
+of strings. A batch must use one supported OpenAI GPT-5.6 or GPT-6 model and one shared request
 configuration. Stateful inputs such as `previous_response_id`, batches without
 a common cacheable block, and inputs that already contain explicit cache
 configuration are rejected before any API request is sent. Shared top-level
@@ -237,13 +237,29 @@ with `color`. Pass `verbose=True` to use the legacy `[n/total] id=...` format.
 
 ## Cost tracking
 
-- GPT-5.6 Sol (`gpt-5.6-sol` and the `gpt-5.6` alias) is estimated at $5.00 input / $0.50 cached input / $30.00 output per million tokens.
-- GPT-5.6 Terra (`gpt-5.6-terra`) is estimated at $2.50 / $0.25 / $15.00, and GPT-5.6 Luna (`gpt-5.6-luna`) at $1.00 / $0.10 / $6.00.
-- GPT-5.6 cache writes are estimated at 1.25 times each model's ordinary input rate and are tracked separately from cache reads.
-- Costs use the checked-in base, standard-tier pricing table (`tokenrail.catalog`). The estimate does not apply GPT-5.6 long-context rates above 272K input tokens, Batch/Fast/Flex pricing, or regional uplifts. The [official OpenAI pricing page](https://developers.openai.com/api/docs/pricing) is authoritative.
+Standard-tier base prices in USD per million tokens, checked against the
+[official OpenAI pricing page](https://developers.openai.com/api/docs/pricing)
+on October 8, 2026:
+
+| Model | Input | Cached input | Cache writes | Output |
+| --- | ---: | ---: | ---: | ---: |
+| `gpt-6-astra` | $10.00 | $1.00 | $12.50 | $50.00 |
+| `gpt-6.1-sol` | $2.00 | $0.10 | $2.50 | $10.00 |
+| `gpt-6-sol` | $2.00 | $0.20 | $2.50 | $10.00 |
+| `gpt-6-luna` | $0.10 | $0.01 | $0.125 | $0.50 |
+| `gpt-5.6-sol` / `gpt-5.6` | $4.00 | $0.40 | $5.00 | $20.00 |
+| `gpt-5.6-terra` | $2.00 | $0.20 | $2.50 | $12.00 |
+| `gpt-5.6-luna` | $0.20 | $0.02 | $0.25 | $1.20 |
+
+GPT-5.6 Sol uses the current promotional rate, available at least through
+November 21, 2026 according to OpenAI.
+
+- GPT-5.6 and GPT-6 cache writes are estimated at 1.25 times each model's ordinary input rate and are tracked separately from cache reads.
+- Costs use the checked-in base, standard-tier pricing table (`tokenrail.catalog`). The estimate does not apply GPT-5.6/GPT-6 long-context rates above 272K input tokens, Batch/Fast/Flex/Ultrafast pricing, or regional uplifts. The official pricing page is authoritative.
 - Models without a pricing entry get `cost=None`. If an unregistered model partially matches an older catalog entry, tokenrail emits `ModelCatalogFallbackWarning` once per model and names the capability and pricing entries used as fallbacks.
 - OpenAI cost allocation is inferred from `billing.payer` in the response body. When `payer == "openai"`, the nominal request cost is counted as OpenAI-covered rather than developer-billed.
-- `reasoning_effort` is gated to `gpt-5` / `o`-series style models in the checked-in capability registry.
+- `reasoning_effort` is gated to supported `gpt-5`, `gpt-6`, and `o`-series models in the checked-in capability registry.
+- GPT-6 Astra and GPT-6.1 Sol support `low`, `medium`, `high`, `xhigh`, and `max` reasoning efforts; `temperature` and `top_p` are rejected before sending a request. GPT-6 Sol and Luna additionally support `none`, which must be explicitly selected to use `temperature` or `top_p`. These checks apply to both `responses.create(...)` and `responses.parse(...)`. See the [GPT-6 guide](https://developers.openai.com/api/docs/guides/latest-model).
 
 Fallback warnings can be filtered with Python's standard warning controls:
 
