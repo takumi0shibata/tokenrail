@@ -1,7 +1,7 @@
 # tokenrail
 
 [![CI](https://github.com/takumi0shibata/tokenrail/actions/workflows/ci.yml/badge.svg)](https://github.com/takumi0shibata/tokenrail/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/tokenrail)](https://pypi.org/project/tokenrail/)
+[![PyPI](https://img.shields.io/pypi/v/tokenrail?cacheSeconds=300)](https://pypi.org/project/tokenrail/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/tokenrail/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
