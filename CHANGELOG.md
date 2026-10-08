@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not plan prefixes, generate or shard keys, prewarm caches, or impose per-key
   submit limits. `BatchExecutor.prompt_cache` and `PromptCacheConfig` are removed.
 - Progress output reports cache reads and writes independently of request settings.
+- Progress output preserves unknown payer strings instead of displaying `?`,
+  and falls back to `billing.payer` when the cost breakdown has no payer.
 
 ## [2.0.0] - 2026-08-03
 

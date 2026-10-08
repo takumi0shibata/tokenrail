@@ -252,6 +252,12 @@ transition hysteresis with `payer_switch_threshold`, and control ANSI styling
 with `color`. Pass `verbose=True` to use the legacy `[n/total] id=...` format.
 `printer=None` still disables all monitor output.
 
+Request lines show `oai` for `openai`, `DEV` for `developer`, and the original
+string for any other payer value. A missing or empty payer is shown as `?`.
+The monitor reads the payer from `cost`, falling back to `billing.payer` when
+unavailable. Unknown payer values count toward `unknown_payer_requests` but
+do not drive payer transitions.
+
 ## Cost tracking
 
 Standard-tier base prices in USD per million tokens, checked against the

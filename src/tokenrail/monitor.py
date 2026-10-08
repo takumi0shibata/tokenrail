@@ -183,11 +183,13 @@ class RollingMetricsMonitor:
             by_model={model: ModelStats(**stats.to_dict()) for model, stats in self._snapshot.by_model.items()},
         )
 
+    def _raw_payer(self, response: NormalizedResponse) -> str | None:
+        if response.cost is not None and response.cost.payer is not None:
+            return response.cost.payer
+        return response.billing.get("payer") if isinstance(response.billing, dict) else None
+
     def _observed_payer(self, response: NormalizedResponse) -> str | None:
-        if response.cost is not None:
-            payer = response.cost.payer
-        else:
-            payer = response.billing.get("payer") if isinstance(response.billing, dict) else None
+        payer = self._raw_payer(response)
         return payer if payer in _KNOWN_PAYERS else None
 
     def record(self, response: NormalizedResponse) -> StatsSnapshot:
@@ -357,13 +359,13 @@ class RollingMetricsMonitor:
             token_text += f" ({cached_pct}% cached / {cache_write_pct}% cache-write)"
 
         cost_text = _format_usd(response.cost.nominal_usd, digits=6) if response.cost is not None else "$—"
-        payer = self._observed_payer(response)
+        payer = self._raw_payer(response)
         if payer == "developer":
             payer_tag = self._style("DEV", _ANSI_BOLD)
         elif payer == "openai":
             payer_tag = self._style("oai", _ANSI_DIM)
         else:
-            payer_tag = self._style("?", _ANSI_DIM)
+            payer_tag = self._style(payer or "?", _ANSI_DIM)
 
         fields = [prefix, token_text, cost_text, payer_tag]
         if response.timing is not None:
@@ -438,7 +440,7 @@ class RollingMetricsMonitor:
     def format_update(self, response: NormalizedResponse, snapshot: StatsSnapshot) -> str:
         """Return the deprecated legacy progress line used by ``verbose=True``."""
         usage = response.usage
-        payer = response.cost.payer if response.cost is not None else None
+        payer = self._raw_payer(response)
         nominal = response.cost.nominal_usd if response.cost is not None else 0.0
         return (
             f"[{snapshot.processed_requests}/{snapshot.total_requests}] id={response.id} model={response.model} "
