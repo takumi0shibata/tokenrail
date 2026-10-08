@@ -3,7 +3,10 @@
 All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
+for its 0.x development releases, with a one-time version reset in 0.4.0.
+Earlier 1.x and 2.x entries are retained as published history; their stable
+designation was premature and does not describe the project's current status.
 
 ## [Unreleased]
 
@@ -20,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Reset the package version from 2.0.0 to 0.4.0 and the development status from
+  Production/Stable to Beta. This continues development from the existing code;
+  it does not restore an older implementation. Public API compatibility is not
+  yet guaranteed between 0.x minor releases.
 - GPT-5.6 Sol and the `gpt-5.6` alias use OpenAI's current promotional prices:
   $4.00 input, $0.40 cached input, $5.00 cache writes, and $20.00 output per
   million tokens, verified on October 8, 2026.
