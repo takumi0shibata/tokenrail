@@ -60,7 +60,6 @@ class _SubmitRateLimiter:
         self.sleep_fn = sleep_fn
         self._submitted_at: deque[float] = deque()
         self._completed_events: deque[tuple[float, int]] = deque()
-        self._inflight_estimates: deque[int] = deque()
         self._inflight_estimated_tokens = 0
         self._completed_requests = 0
         self._completed_tokens = 0
@@ -117,19 +116,18 @@ class _SubmitRateLimiter:
         while not self.can_submit():
             self.sleep_fn(self.retry_after() or 0.01)
 
-    def record_submit(self) -> None:
+    def record_submit(self) -> int:
         now = self.time_fn()
         self._prune(now)
         self._submitted_at.append(now)
         estimated_tokens = self._estimated_next_tokens() if self.max_tpm is not None else 0
-        self._inflight_estimates.append(estimated_tokens)
         self._inflight_estimated_tokens += estimated_tokens
+        return estimated_tokens
 
-    def record_completion(self, response: NormalizedResponse) -> None:
+    def record_completion(self, response: NormalizedResponse, estimated_tokens: int) -> None:
         now = self.time_fn()
         self._prune(now)
-        if self._inflight_estimates:
-            self._inflight_estimated_tokens -= self._inflight_estimates.popleft()
+        self._inflight_estimated_tokens -= estimated_tokens
         total_tokens = response.usage.total_tokens or (response.usage.input_tokens + response.usage.output_tokens)
         self._completed_events.append((now, total_tokens))
         self._completed_requests += 1
@@ -201,12 +199,15 @@ class BatchExecutor:
         )
         next_item = 0
         pending: set[Future[NormalizedResponse]] = set()
+        reservations: dict[Future[NormalizedResponse], int] = {}
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             while next_item < len(items) or pending:
                 while next_item < len(items) and len(pending) < self.max_workers and limiter.can_submit():
-                    limiter.record_submit()
-                    pending.add(executor.submit(self._call_single, items[next_item]))
+                    estimated_tokens = limiter.record_submit()
+                    future = executor.submit(self._call_single, items[next_item])
+                    pending.add(future)
+                    reservations[future] = estimated_tokens
                     next_item += 1
 
                 if not pending:
@@ -223,7 +224,7 @@ class BatchExecutor:
 
                 for future in done:
                     response = future.result()
-                    limiter.record_completion(response)
+                    limiter.record_completion(response, reservations.pop(future))
                     self._writer.save(response)
                     self._monitor.record(response)
 
@@ -232,9 +233,13 @@ class BatchExecutor:
         dict) and return the final :class:`~tokenrail.types.StatsSnapshot`."""
         self._monitor.reset()
         normalized_items = self._prepare_items(items)
+        seen_ids: set[str] = set()
         for item in normalized_items:
             if not item.id:
                 raise ValueError("BatchItem.id must not be empty")
+            if item.id in seen_ids:
+                raise ValueError(f"Duplicate BatchItem.id: {item.id!r}")
+            seen_ids.add(item.id)
             if "request_id" in item.request_kwargs and item.request_kwargs["request_id"] != item.id:
                 raise ValueError(f"request_id must match BatchItem.id for {item.id!r}")
         done_ids = self._writer.load_done_ids()

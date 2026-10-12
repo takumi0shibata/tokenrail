@@ -10,6 +10,18 @@ designation was premature and does not describe the project's current status.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-12
+
+### Fixed
+
+- Track TPM reservations per request so out-of-order completions release the
+  correct estimate rather than undercounting tokens still in flight.
+- Reject duplicate batch ids, including collisions after string conversion,
+  before submitting requests or skipping resumed work. This prevents different
+  inputs sharing an id from being silently skipped on resume.
+- Forward prompt-cache retention through the request body so it also works
+  with the minimum supported OpenAI SDK (1.108.0) for create and parse calls.
+
 ## [0.5.0] - 2026-10-12
 
 ### Changed

@@ -96,10 +96,15 @@ def _prepare_payload(payload: JsonDict, prompt_cache_options: JsonDict | None) -
             if field in payload and value != payload[field]:
                 raise ValueError(f"{field} conflicts with extra_body.{field}")
 
-    if prompt_cache_options is not None:
-        # The SDK does not yet expose prompt_cache_options as a named argument.
-        payload.pop("prompt_cache_options")
-        payload["extra_body"] = {**(extra_body or {}), "prompt_cache_options": prompt_cache_options}
+    # Cache options are not yet named SDK arguments, and retention is absent
+    # from older supported SDK versions. Both can be forwarded in the body.
+    cache_body = {
+        field: payload.pop(field)
+        for field in ("prompt_cache_options", "prompt_cache_retention")
+        if field in payload
+    }
+    if cache_body:
+        payload["extra_body"] = {**(extra_body or {}), **cache_body}
     if payload.get("background") or (extra_body or {}).get("background"):
         raise ValueError("background=True is not supported; tokenrail requires foreground responses")
     return payload

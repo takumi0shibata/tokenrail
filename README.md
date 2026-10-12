@@ -272,10 +272,10 @@ for failed requests, including local structured-output parsing failures.
 These failures remain retryable even when the API returned `status="completed"`,
 because the top-level `error` records the parsing failure.
 
-Batch ids must not be empty. If an item supplies `request_id`, it must equal
-`BatchItem.id`. Empty ids and mismatches raise `ValueError` before any requests
-in that batch are sent. Query ids are stored as JSON values and are not used
-as file names.
+Batch ids must be non-empty and unique after conversion to strings. If an item
+supplies `request_id`, it must equal `BatchItem.id`. Empty ids, duplicate ids,
+and mismatches raise `ValueError` before any requests in that batch are sent.
+Query ids are stored as JSON values and are not used as file names.
 
 ## Progress output
 

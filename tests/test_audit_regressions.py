@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from tokenrail import BatchExecutor, BatchItem, RailClient
 from tokenrail._storage import _JsonlWriter
 from tokenrail.catalog import ModelCatalogFallbackWarning, calculate_cost
+from tokenrail.executor import _SubmitRateLimiter
 from tokenrail.types import NormalizedResponse, UsageBreakdown
 
 
@@ -221,6 +222,64 @@ def test_empty_batch_id_is_rejected_before_any_request(tmp_path, batch_kind):
         executor(api, path).run(batch)
     assert api.calls == []
     assert path.read_text() == ""
+
+
+@pytest.mark.parametrize("batch_kind", ["sequence", "mapping"])
+@pytest.mark.parametrize("already_done", [False, True])
+def test_duplicate_batch_ids_fail_before_requests_or_resume(tmp_path, batch_kind, already_done):
+    api = FakeAPI()
+    path = tmp_path / "results.jsonl"
+    previous = '{"id":"1"}\n' if already_done else ""
+    path.write_text(previous)
+    if batch_kind == "sequence":
+        batch = [BatchItem("valid", {"input": "hello"}), BatchItem("1", {}), BatchItem(1, {})]
+    else:
+        batch = {"valid": "hello", "1": "first input", 1: "different input"}
+    with pytest.raises(ValueError, match="Duplicate BatchItem.id"):
+        executor(api, path).run(batch)
+    assert api.calls == []
+    assert path.read_text() == previous
+
+
+def test_tpm_reservations_follow_out_of_order_completions():
+    limiter = _SubmitRateLimiter(max_rpm=None, max_tpm=500, time_fn=lambda: 0)
+
+    def complete(tokens, reservation):
+        result = response()
+        result.usage = UsageBreakdown(total_tokens=tokens)
+        limiter.record_completion(result, reservation)
+
+    complete(100, limiter.record_submit())
+    slow = limiter.record_submit()
+    fast = limiter.record_submit()
+    assert slow == fast == 100
+    complete(1, fast)
+    later = limiter.record_submit()
+    assert later == 51
+    complete(1, later)
+    # The slow request still reserves 100; FIFO accounting incorrectly leaves 51.
+    assert limiter._inflight_estimated_tokens == 100
+    limiter.max_tpm = 200
+    assert not limiter.can_submit()  # 102 completed + 100 reserved + 34 next.
+    complete(0, slow)
+    assert limiter._inflight_estimated_tokens == 0
+    assert limiter.can_submit()
+
+
+@pytest.mark.parametrize("method", ["build_payload", "build_parse_payload"])
+def test_cache_retention_uses_body_supported_by_minimum_sdk(method):
+    provider = RailClient.openai(client=SimpleNamespace(responses=FakeAPI())).provider
+    extra_body = {"custom": True, "prompt_cache_retention": "24h"}
+    kwargs = {"text_format": Shape} if method == "build_parse_payload" else {}
+    payload = getattr(provider, method)(
+        model="gpt-4o", input="hello", prompt_cache_retention="24h",
+        prompt_cache_options={"mode": "explicit"}, extra_body=extra_body, **kwargs,
+    )
+    assert "prompt_cache_retention" not in payload
+    assert payload["extra_body"] == {
+        "custom": True, "prompt_cache_retention": "24h", "prompt_cache_options": {"mode": "explicit"},
+    }
+    assert extra_body == {"custom": True, "prompt_cache_retention": "24h"}
 
 
 def structured_raw(status, text):
