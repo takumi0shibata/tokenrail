@@ -32,7 +32,7 @@ def _format_usd(value: float, *, digits: int) -> str:
     return f"${value:.{digits}f}"
 
 
-class RollingMetricsMonitor:
+class _RollingMetricsMonitor:
     """Thread-safe aggregator of per-request usage, cost, and throughput metrics.
 
     The default output separates request details from periodic aggregate

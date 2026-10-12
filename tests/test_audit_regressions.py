@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 import warnings
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import httpx
 import pytest
 from openai import OpenAI
 from pydantic import BaseModel
 
-from tokenrail import BatchExecutor, BatchItem, PerRequestJsonSink, RailClient, ResultsJsonlSink, RollingMetricsMonitor
+from tokenrail import BatchExecutor, BatchItem, RailClient
+from tokenrail._storage import _JsonlWriter
 from tokenrail.catalog import ModelCatalogFallbackWarning, calculate_cost
 from tokenrail.types import NormalizedResponse, UsageBreakdown
 
@@ -28,12 +28,12 @@ class FakeAPI:
         return response(kwargs["request_id"])
 
 
-def executor(api, sinks):
+def executor(api, path):
     return BatchExecutor(
         client=SimpleNamespace(responses=api, provider=SimpleNamespace(name="fake")),
-        sinks=sinks,
+        output_path=path,
         max_workers=1,
-        monitor=RollingMetricsMonitor(printer=None),
+        progress=False,
     )
 
 
@@ -41,68 +41,11 @@ def items(**kwargs):
     return [BatchItem("job", {"model": "gpt-4o", "input": "hello", **kwargs})]
 
 
-@pytest.mark.parametrize(
-    "item_id", ["../victim", "/tmp/victim", "..\\victim", "", ".", "..", "a\x00b", "C:evil", "NUL"]
-)
-def test_unsafe_ids_cannot_write_or_send_requests(tmp_path, item_id):
-    sink = PerRequestJsonSink(tmp_path / "out")
-    victim = tmp_path / "victim.json"
-    victim.write_text("original")
-    with pytest.raises(ValueError, match="Unsafe"):
-        sink.save(response(item_id))
-    api = FakeAPI()
-    with pytest.raises(ValueError, match="must not be empty" if not item_id else "Unsafe"):
-        executor(api, [sink]).run([BatchItem(item_id, {"model": "gpt-4o", "input": "hello"})])
-    assert victim.read_text() == "original"
-    assert api.calls == []
-    assert list(sink.output_dir.iterdir()) == []
-
-
-def test_destination_symlink_is_replaced_without_touching_target(tmp_path):
-    sink = PerRequestJsonSink(tmp_path / "out")
-    victim = tmp_path / "victim.json"
-    victim.write_text('{"id":"outside"}')
-    destination = sink.output_dir / "job.json"
-    destination.symlink_to(victim)
-    assert sink.load_done_ids() == set()
-    sink.save(response())
-    assert victim.read_text() == '{"id":"outside"}'
-    assert not destination.is_symlink()
-    assert sink.load_done_ids() == {"job"}
-
-
-@pytest.mark.parametrize("failure", ["fsync", "replace"])
-def test_atomic_save_failure_preserves_previous_record_and_cleans_tempfiles(tmp_path, failure):
-    sink = PerRequestJsonSink(tmp_path)
-    sink.save(response())
-    previous = (tmp_path / "job.json").read_bytes()
-    changed = response()
-    changed.output_text = "changed"
-    with patch(f"tokenrail.sinks.os.{failure}", side_effect=OSError("disk failure")):
-        with pytest.raises(OSError):
-            sink.save(changed)
-    assert (tmp_path / "job.json").read_bytes() == previous
-    assert list(tmp_path.iterdir()) == [tmp_path / "job.json"]
-
-
-def test_corrupt_and_unfinished_per_request_files_are_retried(tmp_path):
-    sink = PerRequestJsonSink(tmp_path)
-    for name, data in {"job": b"{", "empty": b"{}", "scalar": b"[]", "unicode": b"\xff"}.items():
-        (tmp_path / f"{name}.json").write_bytes(data)
-    (tmp_path / "failed.json").write_text('{"id":"resp","status":"failed"}')
-    assert sink.load_done_ids() == set()
-    api = FakeAPI()
-    stats = executor(api, [sink]).run(items())
-    assert stats.success_requests == 1
-    assert len(api.calls) == 1
-    assert sink.load_done_ids() == {"job"}
-
-
 @pytest.mark.parametrize("tail", [b'{"id":"broken"', b'{"text":"\xe3', b"garbage", b"[]"])
 def test_jsonl_repairs_broken_tail_and_keeps_prior_records(tmp_path, tail):
     path = tmp_path / "results.jsonl"
     path.write_bytes(b'{"id":"prior"}\n' + tail)
-    sink = ResultsJsonlSink(path)
+    sink = _JsonlWriter(path)
     sink.save(response())
     assert sink.load_done_ids() == {"prior", "job"}
     assert [json.loads(line)["id"] for line in path.read_bytes().splitlines()] == ["prior", "job"]
@@ -112,7 +55,7 @@ def test_jsonl_repairs_broken_tail_and_keeps_prior_records(tmp_path, tail):
 def test_jsonl_preserves_complete_tail_without_newline(tmp_path, prefix):
     path = tmp_path / "results.jsonl"
     path.write_bytes(prefix + b'{"id":"tail"}')
-    sink = ResultsJsonlSink(path)
+    sink = _JsonlWriter(path)
     sink.save(response())
     expected = {"tail", "job"} | ({"prior"} if prefix else set())
     assert sink.load_done_ids() == expected
@@ -121,12 +64,12 @@ def test_jsonl_preserves_complete_tail_without_newline(tmp_path, prefix):
 def test_jsonl_ignores_non_object_and_invalid_utf8_records(tmp_path):
     path = tmp_path / "results.jsonl"
     path.write_bytes(b'[]\nnull\n1\n\xff\n{"id":"good"}\n')
-    assert ResultsJsonlSink(path).load_done_ids() == {"good"}
+    assert _JsonlWriter(path).load_done_ids() == {"good"}
 
 
 @pytest.mark.parametrize("projected", [{}, {"error": None, "status": "completed"}])
 def test_projector_cannot_hide_failure_from_resume(tmp_path, projected):
-    sink = ResultsJsonlSink(tmp_path / "results.jsonl", projector=lambda r: {"id": r.id, **projected})
+    sink = _JsonlWriter(tmp_path / "results.jsonl", projector=lambda r: {"id": r.id, **projected})
     failed = response()
     failed.status = "incomplete"
     failed.error = "max_output_tokens"
@@ -135,15 +78,6 @@ def test_projector_cannot_hide_failure_from_resume(tmp_path, projected):
     record = json.loads(sink.path.read_text())
     assert record["status"] == "incomplete"
     assert record["error"] == "max_output_tokens"
-
-
-def test_first_atomic_save_failure_leaves_no_completed_file(tmp_path):
-    sink = PerRequestJsonSink(tmp_path)
-    with patch("tokenrail.sinks.os.fsync", side_effect=OSError("disk failure")):
-        with pytest.raises(OSError):
-            sink.save(response())
-    assert sink.load_done_ids() == set()
-    assert list(tmp_path.iterdir()) == []
 
 
 class Shape(BaseModel):
@@ -170,15 +104,14 @@ def test_sdk_unfinished_responses_are_errors_and_retryable(tmp_path, status, met
     transport = httpx.MockTransport(lambda request: httpx.Response(200, json=raw_response(status)))
     with OpenAI(api_key="audit-placeholder", http_client=httpx.Client(transport=transport)) as sdk:
         client = RailClient.openai(client=sdk)
-        per_request = PerRequestJsonSink(tmp_path / "out")
-        jsonl = ResultsJsonlSink(tmp_path / "results.jsonl")
+        jsonl = _JsonlWriter(tmp_path / "results.jsonl")
         batch = items(**({"text_format": Shape} if method == "parse" else {}))
-        ex = BatchExecutor(client=client, sinks=[jsonl, per_request], monitor=RollingMetricsMonitor(printer=None))
+        ex = BatchExecutor(client=client, output_path=jsonl.path, progress=False)
         stats = ex.run(batch)
         assert stats.success_requests == 0
         assert stats.error_requests == 1
         assert stats.input_tokens == 5
-        assert jsonl.load_done_ids() == per_request.load_done_ids() == set()
+        assert jsonl.load_done_ids() == set()
         saved = json.loads(jsonl.path.read_text())
         assert saved["status"] == status
         assert saved["error"]
@@ -203,9 +136,9 @@ def test_background_requests_are_rejected_before_network_use(method, extra_body)
 def test_completed_sdk_response_still_succeeds(tmp_path):
     transport = httpx.MockTransport(lambda request: httpx.Response(200, json=raw_response("completed")))
     with OpenAI(api_key="audit-placeholder", http_client=httpx.Client(transport=transport)) as sdk:
-        sink = ResultsJsonlSink(tmp_path / "results.jsonl")
+        sink = _JsonlWriter(tmp_path / "results.jsonl")
         ex = BatchExecutor(
-            client=RailClient.openai(client=sdk), sinks=[sink], monitor=RollingMetricsMonitor(printer=None)
+            client=RailClient.openai(client=sdk), output_path=sink.path, progress=False
         )
         assert ex.run(items()).success_requests == 1
         assert ex.run(items()).skipped_requests == 1
@@ -254,50 +187,28 @@ def test_gpt4o_may_snapshot_uses_its_own_official_price_without_fallback_warning
     assert calculate_cost("gpt-4o", UsageBreakdown(input_tokens=1_000_000), payer="developer").nominal_usd == 2.5
 
 
-def test_partial_multi_sink_save_is_recovered_on_rerun(tmp_path):
-    api = FakeAPI()
-    first = ResultsJsonlSink(tmp_path / "results.jsonl")
-    second = PerRequestJsonSink(tmp_path / "out")
-    ex = executor(api, [first, second])
-    with patch.object(second, "save", side_effect=OSError("disk full")):
-        with pytest.raises(OSError):
-            ex.run(items())
-    assert first.load_done_ids() == {"job"}
-    assert second.load_done_ids() == set()
-    assert ex.run(items()).success_requests == 1
-    assert first.load_done_ids() == second.load_done_ids() == {"job"}
-    assert ex.run(items()).skipped_requests == 1
-    assert len(api.calls) == 2
-
-
 @pytest.mark.parametrize("request_id", ["different", None, ""])
 def test_mismatched_request_ids_fail_before_any_batch_request(tmp_path, request_id):
     api = FakeAPI()
-    sink = ResultsJsonlSink(tmp_path / "results.jsonl")
+    sink = _JsonlWriter(tmp_path / "results.jsonl")
     batch = [BatchItem("valid", {"model": "gpt-4o", "input": "hello"}), *items(request_id=request_id)]
     with pytest.raises(ValueError, match="request_id must match"):
-        executor(api, [sink]).run(batch)
+        executor(api, sink.path).run(batch)
     assert api.calls == []
     assert sink.path.read_text() == ""
 
 
 def test_matching_request_id_is_resumable(tmp_path):
     api = FakeAPI()
-    ex = executor(api, [ResultsJsonlSink(tmp_path / "results.jsonl")])
+    ex = executor(api, tmp_path / "results.jsonl")
     assert ex.run(items(request_id="job")).success_requests == 1
     assert ex.run(items(request_id="job")).skipped_requests == 1
     assert len(api.calls) == 1
 
 
-@pytest.mark.parametrize("sink_kind", ["none", "jsonl", "per_request"])
 @pytest.mark.parametrize("batch_kind", ["sequence", "mapping"])
-def test_empty_batch_id_is_rejected_before_any_request(tmp_path, sink_kind, batch_kind):
+def test_empty_batch_id_is_rejected_before_any_request(tmp_path, batch_kind):
     api = FakeAPI()
-    sinks = []
-    if sink_kind == "jsonl":
-        sinks = [ResultsJsonlSink(tmp_path / "results.jsonl")]
-    elif sink_kind == "per_request":
-        sinks = [PerRequestJsonSink(tmp_path / "out")]
     if batch_kind == "sequence":
         batch = [
             BatchItem("valid", {"model": "gpt-4o", "input": "hello"}),
@@ -305,11 +216,11 @@ def test_empty_batch_id_is_rejected_before_any_request(tmp_path, sink_kind, batc
         ]
     else:
         batch = {"valid": "hello", "": "hello"}
+    path = tmp_path / "results.jsonl"
     with pytest.raises(ValueError, match="BatchItem.id must not be empty"):
-        executor(api, sinks).run(batch)
+        executor(api, path).run(batch)
     assert api.calls == []
-    if sinks:
-        assert sinks[0].load_done_ids() == set()
+    assert path.read_text() == ""
 
 
 def structured_raw(status, text):
@@ -373,8 +284,7 @@ def test_direct_parse_failure_preserves_response_without_another_request(status,
 
 
 @pytest.mark.parametrize("status", ["incomplete", "completed"])
-@pytest.mark.parametrize("sink_kind", ["jsonl", "per_request", "both"])
-def test_batch_parse_failure_keeps_usage_and_retries_until_success(tmp_path, status, sink_kind):
+def test_batch_parse_failure_keeps_usage_and_retries_until_success(tmp_path, status):
     raw = structured_raw(status, '{"answer":')
     successful = structured_raw("completed", '{"answer":"ok"}')
     payloads = [raw, successful]
@@ -384,13 +294,11 @@ def test_batch_parse_failure_keeps_usage_and_retries_until_success(tmp_path, sta
         calls.append(request)
         return httpx.Response(200, json=payloads.pop(0))
 
-    jsonl = ResultsJsonlSink(tmp_path / "results.jsonl")
-    per_request = PerRequestJsonSink(tmp_path / "out")
-    sinks = {"jsonl": [jsonl], "per_request": [per_request], "both": [jsonl, per_request]}[sink_kind]
+    jsonl = _JsonlWriter(tmp_path / "results.jsonl")
     with OpenAI(api_key="audit-placeholder", http_client=httpx.Client(transport=httpx.MockTransport(handler))) as sdk:
         batch = items(text_format=Shape)
         ex = BatchExecutor(
-            client=RailClient.openai(client=sdk), sinks=sinks, monitor=RollingMetricsMonitor(printer=None)
+            client=RailClient.openai(client=sdk), output_path=jsonl.path, progress=False
         )
         failed = ex.run(batch)
         assert len(calls) == 1
@@ -398,27 +306,22 @@ def test_batch_parse_failure_keeps_usage_and_retries_until_success(tmp_path, sta
         assert failed.error_requests == 1
         assert failed.total_tokens == 110
         assert failed.nominal_usd == pytest.approx(0.00035)
-        for sink in sinks:
-            assert sink.load_done_ids() == set()
-            path = sink.path if isinstance(sink, ResultsJsonlSink) else sink.output_dir / "job.json"
-            record = json.loads(path.read_text())
-            assert record["status"] == status
-            assert "ValidationError" in record["error"]
-            assert record["output_text"] == '{"answer":'
-            assert record["usage"]["total_tokens"] == 110
-            assert record["cost"]["nominal_usd"] == pytest.approx(0.00035)
-            if isinstance(sink, PerRequestJsonSink):
-                assert record["raw_response"] == raw
+        assert jsonl.load_done_ids() == set()
+        record = json.loads(jsonl.path.read_text())
+        assert record["status"] == status
+        assert "ValidationError" in record["error"]
+        assert record["output_text"] == '{"answer":'
+        assert record["usage"]["total_tokens"] == 110
+        assert record["cost"]["nominal_usd"] == pytest.approx(0.00035)
+        assert record["raw_response"] == raw
         assert ex.run(batch).success_requests == 1
         assert len(calls) == 2
-        for sink in sinks:
-            assert sink.load_done_ids() == {"job"}
+        assert jsonl.load_done_ids() == {"job"}
         assert ex.run(batch).skipped_requests == 1
         assert len(calls) == 2
-    if jsonl in sinks:
-        records = [json.loads(line) for line in jsonl.path.read_text().splitlines()]
-        assert records[1]["output_parsed"] == {"answer": "ok"}
-        assert records[1]["error"] is None
+    records = [json.loads(line) for line in jsonl.path.read_text().splitlines()]
+    assert records[1]["output_parsed"] == {"answer": "ok"}
+    assert records[1]["error"] is None
 
 
 @pytest.mark.parametrize("mode", ["parsed", "refusal", "incomplete_valid_json"])

@@ -13,7 +13,7 @@ import pytest
 from openai import OpenAI
 from pydantic import BaseModel, field_validator
 
-from tokenrail import BatchExecutor, BatchItem, PerRequestJsonSink, RailClient, ResultsJsonlSink, RollingMetricsMonitor
+from tokenrail import BatchExecutor, BatchItem, RailClient
 
 pytestmark = pytest.mark.skipif(
     os.getenv("TOKENRAIL_RUN_LIVE_TESTS") != "1", reason="Set TOKENRAIL_RUN_LIVE_TESTS=1 to spend API tokens"
@@ -98,9 +98,9 @@ def test_live_create_and_parse(live):
 
 def test_live_parallel_batch_resume_and_id_preflight(live, tmp_path):
     client, report = live
-    sinks = [ResultsJsonlSink(tmp_path / "results.jsonl"), PerRequestJsonSink(tmp_path / "raw")]
+    path = tmp_path / "results.jsonl"
     batch = [BatchItem(str(i), kwargs(input="Set answer to TOKENRAIL_OK.", text_format=Answer)) for i in range(3)]
-    executor = BatchExecutor(client=client, sinks=sinks, max_workers=2, monitor=RollingMetricsMonitor(printer=None))
+    executor = BatchExecutor(client=client, output_path=path, max_workers=2, progress=False)
     stats = executor.run(batch)
     assert stats.success_requests == 3 and stats.error_requests == 0
     assert stats.total_tokens > 0
@@ -109,7 +109,9 @@ def test_live_parallel_batch_resume_and_id_preflight(live, tmp_path):
     with pytest.raises(ValueError, match="must not be empty"):
         executor.run([*batch, BatchItem("", kwargs(input="hello", request_id=""))])
     assert report["requests"] == requests
-    assert all(sink.load_done_ids() == {"0", "1", "2"} for sink in sinks)
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    assert {record["id"] for record in records} == {"0", "1", "2"}
+    assert all(record["raw_response"]["status"] == "completed" for record in records)
 
 
 def test_live_incomplete_structured_output(live):
@@ -130,8 +132,8 @@ def test_live_incomplete_structured_output(live):
 
 def test_live_local_validation_failure_is_retryable(live, tmp_path):
     client, report = live
-    sinks = [ResultsJsonlSink(tmp_path / "results.jsonl"), PerRequestJsonSink(tmp_path / "raw")]
-    executor = BatchExecutor(client=client, sinks=sinks, max_workers=1, monitor=RollingMetricsMonitor(printer=None))
+    path = tmp_path / "results.jsonl"
+    executor = BatchExecutor(client=client, output_path=path, max_workers=1, progress=False)
     batch = [BatchItem("invalid", kwargs(input="Set answer to TOKENRAIL_OK.", text_format=RejectingAnswer))]
     for _ in range(2):
         requests = report["requests"]
@@ -140,8 +142,10 @@ def test_live_local_validation_failure_is_retryable(live, tmp_path):
         assert stats.error_requests == 1 and stats.success_requests == 0
         assert stats.total_tokens > 0
         assert stats.nominal_usd > 0
-        assert all(sink.load_done_ids() == set() for sink in sinks)
-    record = json.loads((tmp_path / "raw" / "invalid.json").read_text())
+        assert stats.skipped_requests == 0
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    assert len(records) == 2
+    record = records[-1]
     assert record["status"] == "completed"
     assert "intentional local validation failure" in record["error"]
     assert record["raw_response"]["status"] == "completed"

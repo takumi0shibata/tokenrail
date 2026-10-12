@@ -7,9 +7,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
+from tokenrail._monitor import _RollingMetricsMonitor
+from tokenrail._storage import _JsonlWriter
 from tokenrail.executor import BatchExecutor, BatchItem, batch_items_from_queries
-from tokenrail.monitor import RollingMetricsMonitor
-from tokenrail.sinks import ResultsJsonlSink
 from tokenrail.types import CostBreakdown, NormalizedResponse, TimingBreakdown, UsageBreakdown
 
 _UNSET = object()
@@ -173,15 +173,15 @@ class _TimedClient:
 class MonitorAndExecutorTests(unittest.TestCase):
     def test_monitor_constructor_validates_new_options(self):
         with self.assertRaisesRegex(ValueError, "summary_every"):
-            RollingMetricsMonitor(summary_every=0)
+            _RollingMetricsMonitor(summary_every=0)
         with self.assertRaisesRegex(ValueError, "summary_interval"):
-            RollingMetricsMonitor(summary_interval=0)
+            _RollingMetricsMonitor(summary_interval=0)
         with self.assertRaisesRegex(ValueError, "payer_switch_threshold"):
-            RollingMetricsMonitor(payer_switch_threshold=0)
+            _RollingMetricsMonitor(payer_switch_threshold=0)
 
     def test_default_output_separates_header_payer_and_request_details(self):
         output = []
-        monitor = RollingMetricsMonitor(
+        monitor = _RollingMetricsMonitor(
             printer=output.append,
             summary_interval=None,
             payer_switch_threshold=1,
@@ -203,7 +203,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
 
     def test_model_name_is_repeated_only_when_it_changes(self):
         output = []
-        monitor = RollingMetricsMonitor(printer=output.append, summary_interval=None, color=False)
+        monitor = _RollingMetricsMonitor(printer=output.append, summary_interval=None, color=False)
         monitor.start(total_requests=3, todo_requests=3, skipped_requests=0)
         monitor.record(_response("1", model="gpt-5.6-terra"))
         monitor.record(_response("2", model="gpt-5.6-terra"))
@@ -215,7 +215,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
 
     def test_payer_hysteresis_tracks_initial_switch_and_recovery(self):
         output = []
-        monitor = RollingMetricsMonitor(printer=output.append, summary_interval=None, color=False)
+        monitor = _RollingMetricsMonitor(printer=output.append, summary_interval=None, color=False)
         monitor.start(total_requests=15, todo_requests=15, skipped_requests=0)
         for index in range(5):
             monitor.record(_response(f"oai-{index}", payer="openai"))
@@ -237,7 +237,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
 
     def test_unknown_payer_is_counted_but_does_not_drive_transitions(self):
         output = []
-        monitor = RollingMetricsMonitor(printer=output.append, summary_interval=None, color=False)
+        monitor = _RollingMetricsMonitor(printer=output.append, summary_interval=None, color=False)
         monitor.start(total_requests=8, todo_requests=8, skipped_requests=0)
         for index in range(3):
             monitor.record(_response(f"oai-{index}", payer="openai"))
@@ -254,7 +254,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
 
     def test_billing_payer_is_used_when_price_is_unavailable(self):
         output = []
-        monitor = RollingMetricsMonitor(
+        monitor = _RollingMetricsMonitor(
             printer=output.append,
             summary_interval=None,
             payer_switch_threshold=1,
@@ -271,7 +271,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
 
     def test_summary_prints_by_count_and_time_without_duplicates(self):
         output = []
-        monitor = RollingMetricsMonitor(
+        monitor = _RollingMetricsMonitor(
             printer=output.append,
             summary_every=2,
             summary_interval=None,
@@ -287,13 +287,13 @@ class MonitorAndExecutorTests(unittest.TestCase):
         self.assertIn("oai 100%", summaries[1])
 
         timed_output = []
-        timed_monitor = RollingMetricsMonitor(
+        timed_monitor = _RollingMetricsMonitor(
             printer=timed_output.append,
             summary_every=50,
             summary_interval=30.0,
             color=False,
         )
-        with patch("tokenrail.monitor.time.time", side_effect=[0.0, 10.0, 31.0]):
+        with patch("tokenrail._monitor.time.time", side_effect=[0.0, 10.0, 31.0]):
             timed_monitor.start(total_requests=2, todo_requests=2, skipped_requests=0)
             timed_monitor.record(_response("1"))
             timed_monitor.record(_response("2"))
@@ -301,7 +301,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
 
     def test_finalize_prints_totals_and_sorted_model_breakdown(self):
         output = []
-        monitor = RollingMetricsMonitor(printer=output.append, summary_interval=None, color=False)
+        monitor = _RollingMetricsMonitor(printer=output.append, summary_interval=None, color=False)
         monitor.start(total_requests=2, todo_requests=2, skipped_requests=0)
         monitor.record(_response("b", model="gpt-5.6-terra", payer="developer"))
         monitor.record(_response("a", model="gpt-5.6-luna", payer="openai"))
@@ -317,7 +317,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
         self.assertEqual(output[-len(final_lines) :], final_lines)
 
     def test_new_snapshot_fields_survive_copy_and_serialization(self):
-        monitor = RollingMetricsMonitor(printer=None, payer_switch_threshold=1)
+        monitor = _RollingMetricsMonitor(printer=None, payer_switch_threshold=1)
         monitor.start(total_requests=1, todo_requests=1, skipped_requests=0)
         monitor.record(_response("1", payer="developer"))
         snapshot = monitor.snapshot()
@@ -334,7 +334,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
             self.assertIn(key, serialized)
 
     def test_error_request_line_omits_token_and_cost_fields(self):
-        monitor = RollingMetricsMonitor(printer=None, color=False)
+        monitor = _RollingMetricsMonitor(printer=None, color=False)
         monitor.start(total_requests=1, todo_requests=1, skipped_requests=0)
         response = _response("failed", with_cost=False, billing_payer=None, error="RateLimitError: slow down")
         snapshot = monitor.record(response)
@@ -346,7 +346,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
 
     def test_verbose_mode_uses_only_legacy_request_lines(self):
         output = []
-        monitor = RollingMetricsMonitor(printer=output.append, verbose=True, summary_every=1)
+        monitor = _RollingMetricsMonitor(printer=output.append, verbose=True, summary_every=1)
         monitor.start(total_requests=1, todo_requests=1, skipped_requests=0)
         monitor.record(_response("1"))
         monitor.finalize(total_requests=1, skipped_requests=0)
@@ -355,7 +355,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
 
     def test_forced_color_adds_ansi_without_changing_plain_text_mode(self):
         colored_output = []
-        colored = RollingMetricsMonitor(
+        colored = _RollingMetricsMonitor(
             printer=colored_output.append,
             summary_interval=None,
             payer_switch_threshold=1,
@@ -367,7 +367,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
         self.assertIn("\033[", colored_output[2])
 
         plain_output = []
-        plain = RollingMetricsMonitor(
+        plain = _RollingMetricsMonitor(
             printer=plain_output.append,
             summary_interval=None,
             payer_switch_threshold=1,
@@ -378,7 +378,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
         self.assertFalse(any("\033[" in line for line in plain_output))
 
     def test_monitor_aggregates_usage_and_cost(self):
-        monitor = RollingMetricsMonitor(printer=None)
+        monitor = _RollingMetricsMonitor(printer=None)
         monitor.start(total_requests=2, todo_requests=2, skipped_requests=0)
         response = NormalizedResponse(
             id="1",
@@ -407,7 +407,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
         self.assertIsNotNone(snapshot.estimated_finished_at)
 
     def test_monitor_start_and_zero_todo_snapshot(self):
-        monitor = RollingMetricsMonitor(printer=None)
+        monitor = _RollingMetricsMonitor(printer=None)
         snapshot = monitor.start(total_requests=3, todo_requests=0, skipped_requests=3)
         self.assertEqual(snapshot.total_requests, 3)
         self.assertEqual(snapshot.todo_requests, 0)
@@ -418,7 +418,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
         self.assertIsNotNone(snapshot.estimated_finished_at)
 
     def test_format_update_includes_elapsed_eta_and_finish(self):
-        monitor = RollingMetricsMonitor(printer=None)
+        monitor = _RollingMetricsMonitor(printer=None)
         monitor.start(total_requests=2, todo_requests=2, skipped_requests=0)
         response = NormalizedResponse(
             id="1",
@@ -439,7 +439,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
 
     def test_results_jsonl_sink_is_thread_safe(self):
         with tempfile.TemporaryDirectory() as tmp:
-            sink = ResultsJsonlSink(Path(tmp) / "results.jsonl")
+            sink = _JsonlWriter(Path(tmp) / "results.jsonl")
             responses = [
                 NormalizedResponse(
                     id=str(i),
@@ -457,9 +457,9 @@ class MonitorAndExecutorTests(unittest.TestCase):
 
     def test_batch_executor_handles_success_failure_and_skip(self):
         with tempfile.TemporaryDirectory() as tmp:
-            sink = ResultsJsonlSink(Path(tmp) / "results.jsonl")
+            sink = _JsonlWriter(Path(tmp) / "results.jsonl")
             executor = BatchExecutor(
-                client=_FakeClient(), max_workers=4, sinks=[sink], monitor=RollingMetricsMonitor(printer=None)
+                client=_FakeClient(), output_path=sink.path, max_workers=4, progress=False
             )
             items = [
                 BatchItem(id="a", request_kwargs={"model": "gpt-5.4-mini", "input": "ok"}),
@@ -485,11 +485,15 @@ class MonitorAndExecutorTests(unittest.TestCase):
             self.assertIsNotNone(second.estimated_finished_at)
 
     def test_batch_executor_uses_parse_when_text_format_is_present(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
         class ParsedShape:
             pass
 
         client = _FakeClient()
-        executor = BatchExecutor(client=client, max_workers=1, monitor=RollingMetricsMonitor(printer=None))
+        executor = BatchExecutor(
+            client=client, output_path=Path(tmp.name) / "results.jsonl", max_workers=1, progress=False
+        )
         items = [
             BatchItem(
                 id="a",
@@ -506,13 +510,16 @@ class MonitorAndExecutorTests(unittest.TestCase):
         self.assertEqual(client.responses.parse_calls[0]["request_id"], "a")
 
     def test_batch_executor_limits_submits_by_rpm(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
         clock = _Clock()
         client = _TimedClient(clock)
         executor = BatchExecutor(
             client=client,
             max_workers=4,
             max_rpm=2,
-            monitor=RollingMetricsMonitor(printer=None),
+            output_path=Path(tmp.name) / "results.jsonl",
+            progress=False,
         )
         executor._time_fn = clock.time
         executor._sleep_fn = clock.sleep
@@ -529,13 +536,16 @@ class MonitorAndExecutorTests(unittest.TestCase):
         self.assertEqual(clock.sleeps, [60.0])
 
     def test_batch_executor_limits_submits_by_tpm_estimate(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
         clock = _Clock()
         client = _TimedClient(clock, total_tokens=6)
         executor = BatchExecutor(
             client=client,
             max_workers=4,
             max_tpm=10,
-            monitor=RollingMetricsMonitor(printer=None),
+            output_path=Path(tmp.name) / "results.jsonl",
+            progress=False,
         )
         executor._time_fn = clock.time
         executor._sleep_fn = clock.sleep

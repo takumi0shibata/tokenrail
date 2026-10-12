@@ -4,11 +4,12 @@ import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from pathlib import Path
 from typing import Any
 
-from .monitor import RollingMetricsMonitor
-from .sinks import ResultSink
-from .types import BatchItem, NormalizedResponse, StatsSnapshot, TimingBreakdown, UsageBreakdown
+from ._monitor import _RollingMetricsMonitor
+from ._storage import _JsonlWriter
+from .types import BatchItem, JsonDict, NormalizedResponse, StatsSnapshot, TimingBreakdown, UsageBreakdown
 
 
 def batch_items_from_queries(queries: dict[str, Any], **shared_request_kwargs: Any) -> list[BatchItem]:
@@ -136,44 +137,40 @@ class _SubmitRateLimiter:
 
 
 class BatchExecutor:
-    """Thread-based batch runner for :class:`~tokenrail.client.RailClient` requests.
+    """Run requests concurrently and persist each result to ``output_path``.
 
-    Submits items to a thread pool while honoring optional client-side
-    ``max_rpm`` / ``max_tpm`` submit limits, writes each result to the
-    configured sinks, and records metrics on the monitor. Items whose ids are
-    successfully persisted in every sink are skipped, which makes re-runs
-    resumable. Request errors are captured as error responses rather than
-    raised, so a single failing item does not abort the batch. Prompt-cache
-    settings belong in each item's request kwargs and are forwarded unchanged.
+    By default, each JSONL line contains the full normalized response including
+    the original API body under ``raw_response``. A ``projector`` can select
+    fields, but authoritative ``id``, ``error`` and ``status`` are always saved.
+    Successful ids in the file are skipped on subsequent runs; reuse a path
+    and ids only for identical inputs and request settings. Records are appended
+    in completion order, not input order. Request failures are saved as error
+    records; projector, serialization and storage failures propagate from run().
+    ``progress=False`` silences output without disabling statistics.
     """
 
     def __init__(
         self,
         *,
         client: Any,
+        output_path: str | Path,
         max_workers: int = 20,
         max_rpm: int | None = None,
         max_tpm: int | None = None,
-        sinks: Sequence[ResultSink] | None = None,
-        monitor: RollingMetricsMonitor | None = None,
+        projector: Callable[[NormalizedResponse], JsonDict] | None = None,
+        progress: bool = True,
     ) -> None:
+        if output_path is None or output_path == "":
+            raise ValueError("output_path must be a non-empty file path")
         self.client = client
+        self.output_path = Path(output_path)
         self.max_workers = max_workers
         self.max_rpm = max_rpm
         self.max_tpm = max_tpm
-        self.sinks = list(sinks or [])
-        self.monitor = monitor or RollingMetricsMonitor()
+        self._writer = _JsonlWriter(self.output_path, projector=projector)
+        self._monitor = _RollingMetricsMonitor(printer=print if progress else None)
         self._time_fn = time.time
         self._sleep_fn = time.sleep
-
-    def _save(self, response: NormalizedResponse) -> None:
-        for sink in self.sinks:
-            sink.save(response)
-
-    def _load_done_ids(self) -> set[str]:
-        if not self.sinks:
-            return set()
-        return set.intersection(*(sink.load_done_ids() for sink in self.sinks))
 
     def _prepare_items(self, items: Sequence[BatchItem] | dict[str, Any]) -> list[BatchItem]:
         if isinstance(items, dict):
@@ -227,25 +224,23 @@ class BatchExecutor:
                 for future in done:
                     response = future.result()
                     limiter.record_completion(response)
-                    self._save(response)
-                    self.monitor.record(response)
+                    self._writer.save(response)
+                    self._monitor.record(response)
 
     def run(self, items: Sequence[BatchItem] | dict[str, Any]) -> StatsSnapshot:
         """Execute ``items`` (a sequence of :class:`BatchItem` or an ``{id: input}``
         dict) and return the final :class:`~tokenrail.types.StatsSnapshot`."""
-        self.monitor.reset()
+        self._monitor.reset()
         normalized_items = self._prepare_items(items)
         for item in normalized_items:
             if not item.id:
                 raise ValueError("BatchItem.id must not be empty")
             if "request_id" in item.request_kwargs and item.request_kwargs["request_id"] != item.id:
                 raise ValueError(f"request_id must match BatchItem.id for {item.id!r}")
-            for sink in self.sinks:
-                sink.validate_id(item.id)
-        done_ids = self._load_done_ids()
+        done_ids = self._writer.load_done_ids()
         todo = [item for item in normalized_items if item.id not in done_ids]
         skipped = len(normalized_items) - len(todo)
-        self.monitor.start(
+        self._monitor.start(
             total_requests=len(normalized_items),
             todo_requests=len(todo),
             skipped_requests=skipped,
@@ -253,4 +248,4 @@ class BatchExecutor:
 
         self._run_threaded(todo)
 
-        return self.monitor.finalize(total_requests=len(normalized_items), skipped_requests=skipped)
+        return self._monitor.finalize(total_requests=len(normalized_items), skipped_requests=skipped)

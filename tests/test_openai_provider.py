@@ -8,6 +8,7 @@ from pathlib import Path
 
 import tokenrail
 import tokenrail.providers as providers
+from tokenrail._storage import _JsonlWriter
 from tokenrail.catalog import (
     ModelCatalogFallbackWarning,
     calculate_cost,
@@ -16,7 +17,6 @@ from tokenrail.catalog import (
 )
 from tokenrail.client import RailClient
 from tokenrail.providers.openai import OpenAIProvider
-from tokenrail.sinks import PerRequestJsonSink, ResultsJsonlSink
 from tokenrail.types import UsageBreakdown
 
 
@@ -532,13 +532,11 @@ class OpenAIProviderTests(unittest.TestCase):
         self.assertIn("cost=None", str(caught[0].message))
 
 
-class SinkTests(unittest.TestCase):
-    def test_per_request_and_jsonl_resume(self):
+class StorageTests(unittest.TestCase):
+    def test_jsonl_resume(self):
         with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "records"
             jsonl_path = Path(tmp) / "results.jsonl"
-            per_request = PerRequestJsonSink(output_dir)
-            jsonl = ResultsJsonlSink(jsonl_path)
+            jsonl = _JsonlWriter(jsonl_path)
             client = RailClient.openai(
                 client=_FakeClient(
                     _FakeResponsesAPI(
@@ -562,9 +560,7 @@ class SinkTests(unittest.TestCase):
                 )
             )
             response = client.responses.create(model="gpt-5.4-mini-2026-03-17", input="hello", request_id="42")
-            per_request.save(response)
             jsonl.save(response)
-            self.assertEqual(per_request.load_done_ids(), {"42"})
             self.assertEqual(jsonl.load_done_ids(), {"42"})
 
 

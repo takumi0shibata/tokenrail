@@ -14,7 +14,7 @@ It focuses on:
 - client-side RPM / TPM submit throttling
 - OpenAI prompt-cache settings passed through unchanged, with read/write usage tracking
 - per-model token / cost monitoring with ETA progress reporting
-- resumable JSONL and per-request result writing
+- resumable JSONL result writing with the full API response
 
 Fully typed (PEP 561), supports Python 3.10+.
 
@@ -45,8 +45,7 @@ export OPENAI_API_KEY=...
 ## Quick start
 
 ```python
-from tokenrail import BatchExecutor, ResultsJsonlSink, PerRequestJsonSink, RailClient, RollingMetricsMonitor
-from tokenrail.executor import batch_items_from_queries
+from tokenrail import BatchExecutor, RailClient, batch_items_from_queries
 
 client = RailClient.openai(max_retries=6)
 
@@ -62,31 +61,49 @@ items = batch_items_from_queries(
     verbosity="low",
 )
 
-# Consolidate only the necessary elements from all processing results into a single file.
-result_sink = ResultsJsonlSink(
-    "out/results.jsonl",
-    projector=lambda response: {
-        "id": response.id,
-        "text": response.output_text,
-        "model": response.model,
-        "usage": response.usage.to_dict(),
-    },
-)
-# Save the raw output of each query.
-per_request_sink = PerRequestJsonSink("out/")
-
 executor = BatchExecutor(
     client=client,
     max_workers=16,
     max_rpm=500,
     max_tpm=200_000,
-    sinks=[result_sink, per_request_sink],
-    monitor=RollingMetricsMonitor(),
+    output_path="out/results.jsonl",
 )
 
 stats = executor.run(items)
 print(stats.to_dict())
 ```
+
+## Result saving
+
+`output_path` is required for every batch. Parent directories are created
+if needed. Each completed request is appended as one JSONL record, in
+completion order rather than input order.
+
+By default, records contain the full normalized response: output text, parsed
+output, refusal, usage, billing, estimated cost, timing, metadata, status, and
+error. The original API response body is preserved under `raw_response` when
+available. The top-level `id` is your query id; the API's response id is kept
+under `raw_response.id`.
+
+To save selected fields, pass a `projector` directly:
+
+```python
+executor = BatchExecutor(
+    client=client,
+    output_path="out/selected-results.jsonl",
+    projector=lambda response: {
+        "text": response.output_text,
+        "usage": response.usage.to_dict(),
+    },
+)
+stats = executor.run(items)
+```
+
+The projector receives a `NormalizedResponse` and must return a dictionary
+with JSON-serializable values. tokenrail always adds or overrides `id`, `error`,
+and `status` with the actual result, so field selection cannot break resume or
+hide failures. A projector replaces the default record; unselected fields,
+including `raw_response`, are omitted.
 
 ## Prompt caching
 
@@ -144,7 +161,7 @@ items = batch_items_from_queries(
     model="gpt-6.1-sol",
     prompt_cache_options={"mode": "explicit"},
 )
-stats = BatchExecutor(client=client, max_workers=16, max_rpm=120).run(items)
+stats = BatchExecutor(client=client, output_path="out/cached-results.jsonl", max_workers=16, max_rpm=120).run(items)
 print(stats.cached_tokens)       # Tokens read from cache.
 print(stats.cache_write_tokens)  # Tokens newly written to cache.
 ```
@@ -177,8 +194,7 @@ on `response.output_parsed`.
 ```python
 from pydantic import BaseModel
 
-from tokenrail import BatchExecutor, RailClient, ResultsJsonlSink
-from tokenrail.executor import batch_items_from_queries
+from tokenrail import BatchExecutor, RailClient, batch_items_from_queries
 
 
 class PaperSummary(BaseModel):
@@ -198,17 +214,18 @@ items = batch_items_from_queries(
     text_format=PaperSummary,
 )
 
-sink = ResultsJsonlSink(
-    "out/structured-results.jsonl",
+executor = BatchExecutor(
+    client=client,
+    output_path="out/structured-results.jsonl",
+    max_workers=16,
     projector=lambda response: {
-        "id": response.id,
         "summary": response.output_parsed.model_dump(mode="json") if response.output_parsed else None,
         "refusal": response.refusal,
         "usage": response.usage.to_dict(),
     },
 )
 
-stats = BatchExecutor(client=client, sinks=[sink], max_workers=16).run(items)
+stats = executor.run(items)
 print(stats.to_dict())
 ```
 
@@ -224,54 +241,46 @@ OpenAI SDK's `responses.parse(...)` path does not accept that combination.
 - Omitting `timeout` (or passing `None`) preserves the SDK's default timeout. Pass a number of seconds to override it.
 - `max_rpm` and `max_tpm` are optional client-side submit limits. When a limit is set, `BatchExecutor` waits before submitting more work instead of raising its effective concurrency above the configured rate.
 - TPM throttling estimates future usage from completed requests; it is not a hard API token limit. SDK retries are not separately counted by the submit limiter.
-- Request failures are captured as error records (written to sinks and counted in stats) rather than raised, so one failing item does not abort the batch.
+- Request failures are captured as error records (saved to the JSONL file and counted in stats) rather than raised, so one failing item does not abort the batch.
 - API responses with a status other than `completed`, or with an API error, are counted as errors. Incomplete responses retain partial output and usage for diagnostics. `background=True` is rejected before sending because tokenrail does not poll background responses.
 - With the OpenAI SDK, structured-output parsing failures return a response with `error` set and `output_parsed=None`, preserving the raw response, partial text, usage, and estimated cost. Check `response.error` before using parsed output. Capturing the raw response does not issue another API request; transport errors and invalid request arguments still raise on direct client calls.
 - `base_url` is passed through to the OpenAI Python SDK for callers that need an SDK-level custom endpoint.
 
 ## Resume behavior
 
-`BatchExecutor` reads successfully completed ids from every configured sink
-before it starts. An id is skipped only when a valid, successful record exists
-in all sinks. Failed, unfinished, and corrupt records are retried on re-running
-the batch. Legacy records without a `status` field remain readable.
+`BatchExecutor` reads successful query ids from `output_path` before it starts.
+An id is skipped when a valid record has no error and its status is `completed`
+(or absent in legacy records). Failed, unfinished, and corrupt records are
+retried on re-running the batch. Existing JSONL files from earlier releases
+remain readable.
 
-If saving to a later sink fails, `run()` raises the persistence error. On the
-next run, ids missing from any sink are requested again and saved to every
-sink. This can incur another API charge and append another JSONL record for
-the same id; consumers should use the latest successful record for that id.
-Resume does not provide exactly-once API execution. Use the same ids only for
-the same inputs and request settings.
+Use the same output path and query ids only when resuming the same inputs and
+request settings. Select a different path for a different batch. Resume does
+not provide exactly-once API execution: an interruption can cause another API
+charge and another record for the same id. Consumers should use the latest
+successful record for each id.
 
-`PerRequestJsonSink` writes to a temporary file and atomically replaces the
-destination, without following existing destination symlinks. It validates
-saved JSON before considering a file complete. Ids must be safe single file
-names: path separators, Windows-reserved names, and unsafe filename characters
-are rejected before batch requests are sent. `ResultsJsonlSink` repairs a
-broken final line before appending and preserves complete final records that
-lack a newline. Built-in sinks coordinate threads within one sink instance;
-do not concurrently write the same destination from separate instances or
-processes.
+Projector, JSON serialization, and file-writing errors propagate from `run()`.
+Results that were not saved successfully remain eligible for retry. JSONL
+writes are flushed and synced to disk. A broken final line is repaired before
+appending; complete final records without a newline are preserved. Writes are
+coordinated within one executor; do not concurrently write the same destination
+from separate executors or processes.
 
-Successful per-request files contain the raw provider response when available.
-Failed requests, including local structured-output parsing failures, contain
-the normalized response with `error`, usage, cost, and the original provider
-body under `raw_response` when available. This keeps parsing failures
-retryable even when the API returned `status="completed"`.
+The default record preserves partial output, usage, cost, and `raw_response`
+for failed requests, including local structured-output parsing failures.
+These failures remain retryable even when the API returned `status="completed"`,
+because the top-level `error` records the parsing failure.
 
 Batch ids must not be empty. If an item supplies `request_id`, it must equal
-`BatchItem.id`; empty batch ids and mismatches raise `ValueError` before any
-requests in that batch are sent, regardless of the configured sinks.
-
-If you use a custom `projector` with `ResultsJsonlSink`, make sure it keeps an `"id"` field — resume relies on it.
-The sink always adds the response's authoritative `error` and `status` fields,
-including with custom projectors. Custom sinks should return only valid,
-successfully completed ids from `load_done_ids()`.
+`BatchItem.id`. Empty ids and mismatches raise `ValueError` before any requests
+in that batch are sent. Query ids are stored as JSON values and are not used
+as file names.
 
 ## Progress output
 
-`RollingMetricsMonitor` keeps request-specific details short and prints batch
-metrics separately:
+`BatchExecutor` automatically tracks statistics, keeps request-specific
+details short, and prints batch metrics separately:
 
 ```text
 tokenrail · 100 requests
@@ -286,11 +295,22 @@ Prompt cache: 48k read / 2.4k written
 Payer switches: 1
 ```
 
-Periodic summaries are emitted every 50 requests or 30 seconds by default.
-Configure them with `summary_every` and `summary_interval`, adjust payer
-transition hysteresis with `payer_switch_threshold`, and control ANSI styling
-with `color`. Pass `verbose=True` to use the legacy `[n/total] id=...` format.
-`printer=None` still disables all monitor output.
+Periodic summaries are emitted every 50 completed requests or after 30 seconds
+when another result arrives. Payer transitions require three consecutive known
+payer observations, and ANSI colors are enabled automatically for a terminal.
+
+Pass `progress=False` to disable all progress output:
+
+```python
+stats = BatchExecutor(
+    client=client,
+    output_path="out/results.jsonl",
+    progress=False,
+).run(items)
+```
+
+Statistics are still collected and returned as a `StatsSnapshot`. Display
+intervals and formatting use built-in defaults.
 
 Request lines show `oai` for `openai`, `DEV` for `developer`, and the original
 string for any other payer value. A missing or empty payer is shown as `?`.
@@ -352,7 +372,7 @@ TOKENRAIL_RUN_LIVE_TESTS=1 uv run pytest tests/test_live_openai.py -q -s
 These checks use `gpt-6-luna`, capped outputs, and no SDK retries. The normal
 test command skips them. The suite records usage before SDK parsing and checks
 a 100,000-token ceiling; its fixed prompts and output caps keep the expected
-usage well below that ceiling. During 0.4.1 release validation, the five live
+usage well below that ceiling. During 0.5.0 release validation, the five live
 checks passed using 7,719 tokens over ten requests, including 3,604 cache reads
 and 3,604 cache writes.
 

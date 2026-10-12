@@ -10,6 +10,54 @@ designation was premature and does not describe the project's current status.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-12
+
+### Changed
+
+- **Breaking:** `BatchExecutor` requires `output_path` and saves every result
+  to that JSONL file. The default record includes the full normalized response
+  and the original API body under `raw_response`.
+- Pass `projector` directly to `BatchExecutor` to select saved fields.
+  The authoritative query `id`, `error`, and `status` are always retained.
+- Progress and statistics are automatic. `progress=False` silences display
+  while preserving the returned statistics and built-in display defaults.
+- JSONL storage and metrics monitoring are now internal implementations.
+  Remove imports of `ResultsJsonlSink`, `PerRequestJsonSink`, and
+  `RollingMetricsMonitor`, and replace the removed `sinks` and `monitor`
+  arguments. Per-request JSON files are no longer written.
+
+### Fixed
+
+- Roll back an unsuccessful JSONL append so an ordinary write or fsync failure
+  does not leave a successful resume record.
+
+### Migration from 0.4.x
+
+```python
+# Before
+executor = BatchExecutor(
+    client=client,
+    sinks=[
+        ResultsJsonlSink("out/results.jsonl", projector=project),
+        PerRequestJsonSink("out/raw"),
+    ],
+    monitor=RollingMetricsMonitor(printer=None),
+)
+
+# After
+executor = BatchExecutor(
+    client=client,
+    output_path="out/results.jsonl",
+    projector=project,
+    progress=False,
+)
+```
+
+Omit `projector` to retain all normalized fields and the raw API response in
+one JSONL file. `output_path=None` and empty paths are rejected; saving cannot
+be disabled. Existing successful JSONL records remain resumable. Reuse a path
+and query ids only for the same inputs and request settings.
+
 ## [0.4.1] - 2026-10-12
 
 ### Added

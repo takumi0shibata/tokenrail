@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import httpx
 from openai import OpenAI
 from pydantic import BaseModel
 
-from tokenrail import BatchExecutor, RailClient, ResultsJsonlSink, RollingMetricsMonitor, batch_items_from_queries
+from tokenrail import BatchExecutor, RailClient, batch_items_from_queries
 
 
 class Answer(BaseModel):
@@ -123,7 +125,7 @@ class PromptCachePassthroughTests(unittest.TestCase):
 
     def test_batch_preserves_inputs_and_keys_without_prewarming_or_per_key_throttling(self):
         requests: list[dict] = []
-        output: list[str] = []
+        output = io.StringIO()
         options = {"mode": "explicit"}
         items = batch_items_from_queries(
             {str(index): _input(f"Question {index}") for index in range(20)},
@@ -135,13 +137,11 @@ class PromptCachePassthroughTests(unittest.TestCase):
         with _sdk_client(requests) as sdk, tempfile.TemporaryDirectory() as directory:
             result_file = Path(directory) / "results.jsonl"
             result_file.write_text('{"id":"0"}\n', encoding="utf-8")
-            monitor = RollingMetricsMonitor(printer=output.append, summary_every=1, summary_interval=None, color=False)
             executor = BatchExecutor(
                 client=RailClient.openai(client=sdk),
                 max_workers=1,
                 max_rpm=120,
-                sinks=[ResultsJsonlSink(result_file)],
-                monitor=monitor,
+                output_path=result_file,
             )
             now = [0.0]
 
@@ -150,7 +150,8 @@ class PromptCachePassthroughTests(unittest.TestCase):
 
             executor._time_fn = lambda: now[0]
             executor._sleep_fn = sleep
-            stats = executor.run(items)
+            with redirect_stdout(output):
+                stats = executor.run(items)
             records = [json.loads(line) for line in result_file.read_text(encoding="utf-8").splitlines()]
 
         self.assertEqual(items, original)
@@ -168,8 +169,7 @@ class PromptCachePassthroughTests(unittest.TestCase):
         self.assertAlmostEqual(stats.nominal_usd, 19 * 0.00243)
         self.assertEqual(stats.to_dict()["cache_write_tokens"], 19 * 700)
         self.assertEqual(records[1]["usage"]["cache_write_tokens"], 700)
-        self.assertIn("cache r33%/w47%", monitor.format_summary(stats))
-        self.assertIn("Prompt cache: 9.5k read / 13.3k written", output)
+        self.assertIn("Prompt cache: 9.5k read / 13.3k written", output.getvalue())
 
 
 if __name__ == "__main__":
