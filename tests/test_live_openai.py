@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import os
-from collections import Counter
 from pathlib import Path
 from uuid import uuid4
 
 import httpx
 import pytest
+from _live_budget import MODEL, LiveBudgetTransport
 from openai import OpenAI
 from pydantic import BaseModel, field_validator
 
@@ -18,8 +18,6 @@ from tokenrail import BatchExecutor, BatchItem, RailClient
 pytestmark = pytest.mark.skipif(
     os.getenv("TOKENRAIL_RUN_LIVE_TESTS") != "1", reason="Set TOKENRAIL_RUN_LIVE_TESTS=1 to spend API tokens"
 )
-MODEL = "gpt-6-luna"
-TOKEN_BUDGET = 100_000
 
 
 class Answer(BaseModel):
@@ -40,38 +38,41 @@ def live():
     load_dotenv(Path(__file__).resolve().parents[1] / ".env")
     if not os.getenv("OPENAI_API_KEY"):
         pytest.fail("OPENAI_API_KEY is required for live tests")
-    report = {
-        "model": MODEL,
-        "requests": 0,
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "total_tokens": 0,
-        "cached_tokens": 0,
-        "cache_write_tokens": 0,
-    }
-    statuses = Counter()
+    remaining = os.getenv("TOKENRAIL_LIVE_FREE_TOKENS_REMAINING")
+    guard = LiveBudgetTransport(
+        httpx.HTTPTransport(retries=0), free_tokens_remaining=int(remaining) if remaining else None,
+    )
+    report = guard.report
+    try:
+        with OpenAI(
+            base_url="https://api.openai.com/v1", timeout=60, max_retries=0,
+            http_client=httpx.Client(transport=guard),
+        ) as sdk:
+            client = RailClient.openai(client=sdk)
+            # The only generation allowed without a verified free-token balance.
+            client.responses.create(input="OK", **kwargs(max_output_tokens=16))
+            yield client, report
+    finally:
+        destination = os.getenv("TOKENRAIL_LIVE_REPORT")
+        if destination:
+            Path(destination).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print("Live usage:", json.dumps(report))
 
-    def account(response: httpx.Response) -> None:
-        # Count usage before any SDK parser runs, including parser failures.
-        response.read()
-        body = response.json()
-        usage = body.get("usage") or {}
-        details = usage.get("input_tokens_details") or {}
-        report["requests"] += 1
-        for key in ("input_tokens", "output_tokens", "total_tokens"):
-            report[key] += usage.get(key) or 0
-        for key in ("cached_tokens", "cache_write_tokens"):
-            report[key] += details.get(key) or 0
-        statuses[body.get("status") or str(response.status_code)] += 1
-        assert report["total_tokens"] <= TOKEN_BUDGET
 
-    with OpenAI(timeout=60, max_retries=0, http_client=httpx.Client(event_hooks={"response": [account]})) as sdk:
-        yield RailClient.openai(client=sdk), report
-    report["statuses"] = dict(statuses)
-    destination = os.getenv("TOKENRAIL_LIVE_REPORT")
-    if destination:
-        Path(destination).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print("Live usage:", json.dumps(report))
+@pytest.fixture(scope="module")
+def live_ready(live):
+    _, report = live
+    if report["stop_reason"] or report["free_tokens_remaining"] is None:
+        pytest.skip(report["stop_reason"] or "Verified free-token balance required after the initial probe")
+    return live
+
+
+def test_live_payer_probe(live):
+    _, report = live
+    assert report["requests"] == 1
+    assert report["payer"] == "openai"
+    assert report["stop_reason"] is None
+    assert report["total_tokens"] > 0
 
 
 def kwargs(**extra):
@@ -84,8 +85,8 @@ def kwargs(**extra):
     }
 
 
-def test_live_create_and_parse(live):
-    client, _ = live
+def test_live_create_and_parse(live_ready):
+    client, _ = live_ready
     response = client.responses.create(input="Reply with exactly TOKENRAIL_OK.", temperature=0, **kwargs())
     assert response.status == "completed" and response.error is None
     assert response.output_text == "TOKENRAIL_OK"
@@ -96,8 +97,8 @@ def test_live_create_and_parse(live):
     assert parsed.cost is not None
 
 
-def test_live_parallel_batch_resume_and_id_preflight(live, tmp_path):
-    client, report = live
+def test_live_parallel_batch_resume_and_id_preflight(live_ready, tmp_path):
+    client, report = live_ready
     path = tmp_path / "results.jsonl"
     batch = [BatchItem(str(i), kwargs(input="Set answer to TOKENRAIL_OK.", text_format=Answer)) for i in range(3)]
     executor = BatchExecutor(client=client, output_path=path, max_workers=2, progress=False)
@@ -114,8 +115,8 @@ def test_live_parallel_batch_resume_and_id_preflight(live, tmp_path):
     assert all(record["raw_response"]["status"] == "completed" for record in records)
 
 
-def test_live_incomplete_structured_output(live):
-    client, report = live
+def test_live_incomplete_structured_output(live_ready):
+    client, report = live_ready
     requests = report["requests"]
     result = client.responses.parse(
         input="Set answer to a detailed essay of at least 400 words about prime numbers.",
@@ -130,8 +131,8 @@ def test_live_incomplete_structured_output(live):
     assert result.cost is not None
 
 
-def test_live_local_validation_failure_is_retryable(live, tmp_path):
-    client, report = live
+def test_live_local_validation_failure_is_retryable(live_ready, tmp_path):
+    client, report = live_ready
     path = tmp_path / "results.jsonl"
     executor = BatchExecutor(client=client, output_path=path, max_workers=1, progress=False)
     batch = [BatchItem("invalid", kwargs(input="Set answer to TOKENRAIL_OK.", text_format=RejectingAnswer))]
@@ -153,8 +154,8 @@ def test_live_local_validation_failure_is_retryable(live, tmp_path):
     assert record["usage"]["total_tokens"] > 0
 
 
-def test_live_explicit_prompt_cache(live):
-    client, _ = live
+def test_live_explicit_prompt_cache(live_ready):
+    client, _ = live_ready
     reference = "Reference entry: prime numbers have exactly two positive divisors. " * 300
     shared = {"type": "input_text", "text": reference, "prompt_cache_breakpoint": {"mode": "explicit"}}
     key = f"tokenrail-live-{uuid4().hex}"

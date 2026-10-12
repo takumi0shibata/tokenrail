@@ -363,18 +363,38 @@ uv run ruff check src tests
 ```
 
 Live API checks are opt-in and spend tokens. Set `OPENAI_API_KEY` in the
-environment or a local `.env`, then run:
+environment or a local `.env`. Start with the minimal payer probe; this first
+request may be billed to you:
 
 ```bash
-TOKENRAIL_RUN_LIVE_TESTS=1 uv run pytest tests/test_live_openai.py -q -s
+TOKENRAIL_RUN_LIVE_TESTS=1 uv run pytest tests/test_live_openai.py::test_live_payer_probe -q -s
 ```
 
-These checks use `gpt-6-luna`, capped outputs, and no SDK retries. The normal
-test command skips them. The suite records usage before SDK parsing and checks
-a 100,000-token ceiling; its fixed prompts and output caps keep the expected
-usage well below that ceiling. During 0.5.0 release validation, the five live
-checks passed using 7,719 tokens over ten requests, including 3,604 cache reads
-and 3,604 cache writes.
+The remaining tests require `TOKENRAIL_LIVE_FREE_TOKENS_REMAINING` to contain a
+verified remaining balance for the applicable organization-wide model group.
+Check the current program terms, project eligibility, and usage dashboard, and
+pause other consumers of that shared quota before supplying this value. Leave
+it unset when the balance is unknown: only the initial probe runs, and the five
+remaining tests are skipped. Then, with a verified balance, run
+`TOKENRAIL_RUN_LIVE_TESTS=1 uv run pytest tests/test_live_openai.py -q -s`.
+Every invocation includes a new probe and consumes a new budget.
+
+These checks use `gpt-6-luna`, capped outputs, and no SDK retries. Generation
+requests are serialized even when batch workers run concurrently. Before each
+generation, the transport calls the input-token count endpoint with the actual
+input and structured schema, then reserves input tokens plus the output cap
+against both a 100,000-token total ceiling and the verified free-token balance.
+Reservations are never refunded. The output cap includes reasoning tokens;
+cache and reasoning details are not added again to total usage.
+
+A payer other than `openai`, unknown payer, missing or inconsistent usage,
+preflight failure, or transport failure blocks all subsequent sends. A response
+with payer `openai` confirms only that request's allocation; it does not promise
+future free usage. The response that reveals a payer switch may already be
+billed, and the caller-supplied balance cannot prevent other processes from
+consuming the shared quota. The normal test command skips all live checks.
+During 0.5.0 validation, the original five live checks used 7,719 tokens over ten
+requests; that historical result does not establish today's remaining balance.
 
 ## License
 

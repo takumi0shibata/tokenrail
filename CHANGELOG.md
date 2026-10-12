@@ -10,6 +10,18 @@ designation was premature and does not describe the project's current status.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-12
+
+### Fixed
+
+- Enforce the opt-in live-test budget before generation using exact input-token
+  preflight and non-refundable reservations for input plus capped output.
+- Start with one minimal payer probe; require a verified free-token balance
+  before further live tests. Serialize live sends and block follow-ups when
+  payer is not `openai`, usage is missing or inconsistent, or transport fails.
+- Add offline regression coverage for quota exhaustion, parallel callers,
+  payer switches, SDK retries, parsing failures, and incomplete accounting.
+
 ## [0.5.1] - 2026-10-12
 
 ### Fixed
