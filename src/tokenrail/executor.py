@@ -141,7 +141,7 @@ class BatchExecutor:
     Submits items to a thread pool while honoring optional client-side
     ``max_rpm`` / ``max_tpm`` submit limits, writes each result to the
     configured sinks, and records metrics on the monitor. Items whose ids are
-    already present in the first sink are skipped, which makes re-runs
+    successfully persisted in every sink are skipped, which makes re-runs
     resumable. Request errors are captured as error responses rather than
     raised, so a single failing item does not abort the batch. Prompt-cache
     settings belong in each item's request kwargs and are forwarded unchanged.
@@ -173,7 +173,7 @@ class BatchExecutor:
     def _load_done_ids(self) -> set[str]:
         if not self.sinks:
             return set()
-        return self.sinks[0].load_done_ids()
+        return set.intersection(*(sink.load_done_ids() for sink in self.sinks))
 
     def _prepare_items(self, items: Sequence[BatchItem] | dict[str, Any]) -> list[BatchItem]:
         if isinstance(items, dict):
@@ -235,6 +235,13 @@ class BatchExecutor:
         dict) and return the final :class:`~tokenrail.types.StatsSnapshot`."""
         self.monitor.reset()
         normalized_items = self._prepare_items(items)
+        for item in normalized_items:
+            if not item.id:
+                raise ValueError("BatchItem.id must not be empty")
+            if "request_id" in item.request_kwargs and item.request_kwargs["request_id"] != item.id:
+                raise ValueError(f"request_id must match BatchItem.id for {item.id!r}")
+            for sink in self.sinks:
+                sink.validate_id(item.id)
         done_ids = self._load_done_ids()
         todo = [item for item in normalized_items if item.id not in done_ids]
         skipped = len(normalized_items) - len(todo)

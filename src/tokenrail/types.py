@@ -114,7 +114,8 @@ class TimingBreakdown:
 class NormalizedResponse:
     """Provider-agnostic result of a single request.
 
-    ``error`` is set (and ``output_text`` is ``None``) when the request failed;
+    ``error`` is set when the request failed or returned an unfinished result;
+    incomplete responses may retain partial ``output_text`` for diagnostics.
     ``raw_response`` carries the unmodified provider payload when available.
     """
 
@@ -131,6 +132,7 @@ class NormalizedResponse:
     timing: TimingBreakdown | None = None
     error: str | None = None
     metadata: JsonDict | None = None
+    status: str | None = None
 
     def to_dict(self) -> JsonDict:
         return {
@@ -147,6 +149,7 @@ class NormalizedResponse:
             "timing": self.timing.to_dict() if self.timing is not None else None,
             "error": self.error,
             "metadata": self.metadata,
+            "status": self.status,
         }
 
 

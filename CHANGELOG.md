@@ -10,6 +10,32 @@ designation was premature and does not describe the project's current status.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-12
+
+### Added
+
+- Regression tests for the repository audit findings, plus opt-in GPT-6 Luna
+  live API checks for structured outputs, batch resume, incomplete responses,
+  local parsing failures, and explicit prompt caching.
+
+### Fixed
+
+- Reject unsafe per-request file ids and atomically replace files without
+  following destination symlinks; validate saved records before resuming.
+- Repair interrupted JSONL tails before appending further results.
+- Count unsuccessful API response states as errors and retry failed or corrupt
+  records on resume. Reject background requests before sending.
+- Resume only ids successfully saved to all configured sinks, and reject
+  mismatches between batch ids and request ids before sending any batch work.
+- Preserve the OpenAI SDK default timeout when no timeout is configured.
+- Use the snapshot-specific price for `gpt-4o-2024-05-13`.
+- Reject empty batch ids before sending any work, including JSONL-only and
+  sink-free batches.
+- Capture the SDK's raw response before structured-output parsing so parsing
+  errors retain partial output, usage, billing, and cost without a second API
+  request. Per-request error files store the normalized record and original
+  raw response to keep local parsing failures retryable.
+
 ## [0.4.0] - 2026-10-08
 
 ### Added

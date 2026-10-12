@@ -477,8 +477,9 @@ class MonitorAndExecutorTests(unittest.TestCase):
 
             second = executor.run(items)
             self.assertEqual(second.total_requests, 2)
-            self.assertEqual(second.todo_requests, 0)
-            self.assertEqual(second.skipped_requests, 2)
+            self.assertEqual(second.todo_requests, 1)
+            self.assertEqual(second.skipped_requests, 1)
+            self.assertEqual(second.error_requests, 1)
             self.assertEqual(second.remaining_requests, 0)
             self.assertEqual(second.eta_seconds, 0.0)
             self.assertIsNotNone(second.estimated_finished_at)

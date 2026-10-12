@@ -100,6 +100,8 @@ def _prepare_payload(payload: JsonDict, prompt_cache_options: JsonDict | None) -
         # The SDK does not yet expose prompt_cache_options as a named argument.
         payload.pop("prompt_cache_options")
         payload["extra_body"] = {**(extra_body or {}), "prompt_cache_options": prompt_cache_options}
+    if payload.get("background") or (extra_body or {}).get("background"):
+        raise ValueError("background=True is not supported; tokenrail requires foreground responses")
     return payload
 
 
@@ -147,13 +149,15 @@ class OpenAIProvider(BaseProvider):
             from openai import OpenAI
         except ImportError as exc:
             raise ImportError("openai is required for RailClient.openai(). Install it with `uv add openai`.") from exc
-        return OpenAI(
+        options: JsonDict = dict(
             api_key=api_key,
             organization=organization,
-            timeout=timeout,
             base_url=base_url,
             max_retries=max_retries,
         )
+        if timeout is not None:
+            options["timeout"] = timeout
+        return OpenAI(**options)
 
     def _validate_capabilities(
         self,
@@ -325,14 +329,20 @@ class OpenAIProvider(BaseProvider):
         billing = raw.get("billing")
         actual_tier = str(raw.get("service_tier") or service_tier or "default")
         cost = calculate_cost(model=model, usage=usage, payer=(billing or {}).get("payer"), service_tier=actual_tier)
+        status = raw.get("status")
+        error = None
+        if raw.get("error") is not None:
+            error = f"Response error: {raw['error']}"
+        elif status is not None and status != "completed":
+            error = f"Response status={status}: {raw.get('incomplete_details') or 'response did not complete'}"
         return NormalizedResponse(
-            id=request_id or str(raw.get("id") or ""),
+            id=request_id if request_id is not None else str(raw.get("id") or ""),
             model=str(raw.get("model") or model),
             provider=self.name,
             output_text=_extract_output_text(raw),
             raw_response=raw,
             output_parsed=output_parsed,
-            refusal=refusal,
+            refusal=refusal if refusal is not None else _extract_refusal(response, raw),
             usage=usage,
             billing=billing if isinstance(billing, dict) else None,
             cost=cost,
@@ -342,6 +352,8 @@ class OpenAIProvider(BaseProvider):
                 latency_seconds=completed_at - started_at,
             ),
             metadata=metadata,
+            status=status,
+            error=error,
         )
 
     def create(
@@ -436,9 +448,32 @@ class OpenAIProvider(BaseProvider):
         )
 
         started_at = time.time()
-        response = self._responses.parse(**payload)
+        raw_api = getattr(self._responses, "with_raw_response", None)
+        if raw_api is None:
+            # Keep supporting injected clients implementing only create/parse.
+            response = self._responses.parse(**payload)
+            raw = _serialize_response(response)
+        else:
+            # Obtain the body before the SDK's structured-output post-parser
+            # can fail. Parsing this same response never issues another request.
+            api_response = raw_api.parse(**payload)
+            raw = api_response.http_response.json()
+            try:
+                response = api_response.parse()
+            except Exception as exc:
+                normalized = self._normalize_response(
+                    response=raw,
+                    model=model,
+                    request_id=request_id,
+                    service_tier=service_tier,
+                    metadata=metadata,
+                    started_at=started_at,
+                    completed_at=time.time(),
+                )
+                parse_error = f"Structured output parsing failed ({type(exc).__name__}): {exc}"
+                normalized.error = f"{normalized.error}; {parse_error}" if normalized.error else parse_error
+                return normalized
         completed_at = time.time()
-        raw = _serialize_response(response)
         return self._normalize_response(
             response=raw,
             model=model,

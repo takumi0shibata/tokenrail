@@ -186,6 +186,7 @@ _PRICING_RULES: list[tuple[tuple[str, ...], ModelPricing]] = [
     (("gpt-4.1-nano",), ModelPricing(Decimal("0.10"), Decimal("0.025"), Decimal("0.40"))),
     (("gpt-4.1",), ModelPricing(Decimal("2.00"), Decimal("0.50"), Decimal("8.00"))),
     (("gpt-4o-mini",), ModelPricing(Decimal("0.15"), Decimal("0.075"), Decimal("0.60"))),
+    (("gpt-4o-2024-05-13",), ModelPricing(Decimal("5.00"), None, Decimal("15.00"))),
     (("gpt-4o",), ModelPricing(Decimal("2.50"), Decimal("1.25"), Decimal("10.00"))),
     (("o4-mini",), ModelPricing(Decimal("1.10"), Decimal("0.275"), Decimal("4.40"))),
     (("o3",), ModelPricing(Decimal("2.00"), Decimal("0.50"), Decimal("8.00"))),
