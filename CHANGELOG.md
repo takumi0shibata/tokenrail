@@ -10,6 +10,14 @@ designation was premature and does not describe the project's current status.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-18
+
+### Fixed
+
+- Reject `stream=True` in normal arguments and `extra_body` before sending
+  create or parse requests. Unsupported streaming can no longer cause
+  post-send normalization failures, lost usage accounting, or batch resends.
+
 ## [0.5.2] - 2026-10-12
 
 ### Fixed

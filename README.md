@@ -243,6 +243,7 @@ OpenAI SDK's `responses.parse(...)` path does not accept that combination.
 - TPM throttling estimates future usage from completed requests; it is not a hard API token limit. SDK retries are not separately counted by the submit limiter.
 - Request failures are captured as error records (saved to the JSONL file and counted in stats) rather than raised, so one failing item does not abort the batch.
 - API responses with a status other than `completed`, or with an API error, are counted as errors. Incomplete responses retain partial output and usage for diagnostics. `background=True` is rejected before sending because tokenrail does not poll background responses.
+- `stream=True` is rejected before sending, including through `extra_body`, for both `responses.create(...)` and `responses.parse(...)`. tokenrail requires non-streaming responses to retain output and usage; omit `stream` or set it to `False`.
 - With the OpenAI SDK, structured-output parsing failures return a response with `error` set and `output_parsed=None`, preserving the raw response, partial text, usage, and estimated cost. Check `response.error` before using parsed output. Capturing the raw response does not issue another API request; transport errors and invalid request arguments still raise on direct client calls.
 - `base_url` is passed through to the OpenAI Python SDK for callers that need an SDK-level custom endpoint.
 

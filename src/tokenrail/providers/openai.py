@@ -107,6 +107,8 @@ def _prepare_payload(payload: JsonDict, prompt_cache_options: JsonDict | None) -
         payload["extra_body"] = {**(extra_body or {}), **cache_body}
     if payload.get("background") or (extra_body or {}).get("background"):
         raise ValueError("background=True is not supported; tokenrail requires foreground responses")
+    if payload.get("stream") or (extra_body or {}).get("stream"):
+        raise ValueError("stream=True is not supported; tokenrail requires non-streaming responses")
     return payload
 
 

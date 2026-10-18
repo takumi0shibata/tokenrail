@@ -134,6 +134,73 @@ def test_background_requests_are_rejected_before_network_use(method, extra_body)
         assert calls == []
 
 
+@pytest.mark.parametrize("method", ["create", "parse"])
+@pytest.mark.parametrize("kwargs", [
+    {"stream": True},
+    {"extra_body": {"stream": True}},
+    {"stream": True, "extra_body": {"stream": True}},
+    {"stream": False, "extra_body": {"stream": True}},
+    {"stream": True, "extra_body": {"stream": False}},
+])
+def test_streaming_requests_are_rejected_before_network_use(method, kwargs):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content="data: [DONE]\n\n")
+
+    with OpenAI(api_key="audit-placeholder", http_client=httpx.Client(transport=httpx.MockTransport(handler))) as sdk:
+        client = RailClient.openai(client=sdk)
+        options = {**kwargs, **({"text_format": Shape} if method == "parse" else {})}
+        with pytest.raises(ValueError, match="stream"):
+            getattr(client.responses, method)(model="gpt-4o", input="hello", **options)
+        assert calls == []
+
+
+@pytest.mark.parametrize("method", ["create", "parse"])
+@pytest.mark.parametrize("kwargs", [{}, {"stream": False}, {"extra_body": {"stream": False}}])
+def test_non_streaming_requests_preserve_response_and_usage(method, kwargs):
+    calls = []
+
+    def handler(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json=raw_response("completed"))
+
+    with OpenAI(api_key="audit-placeholder", http_client=httpx.Client(transport=httpx.MockTransport(handler))) as sdk:
+        client = RailClient.openai(client=sdk)
+        options = {**kwargs, **({"text_format": Shape} if method == "parse" else {})}
+        result = getattr(client.responses, method)(model="gpt-4o", input="hello", **options)
+        assert len(calls) == 1
+        assert not calls[0].get("stream")
+        assert result.error is None and result.status == "completed"
+        assert result.usage.total_tokens == 5
+
+
+@pytest.mark.parametrize("method", ["create", "parse"])
+@pytest.mark.parametrize("extra_body", [False, True])
+def test_streaming_batch_retries_never_send_requests(tmp_path, method, extra_body):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content="data: [DONE]\n\n")
+
+    with OpenAI(api_key="audit-placeholder", http_client=httpx.Client(transport=httpx.MockTransport(handler))) as sdk:
+        kwargs = {"extra_body": {"stream": True}} if extra_body else {"stream": True}
+        if method == "parse":
+            kwargs["text_format"] = Shape
+        path = tmp_path / "results.jsonl"
+        ex = BatchExecutor(client=RailClient.openai(client=sdk), output_path=path, progress=False)
+        for _ in range(2):
+            stats = ex.run(items(**kwargs))
+            assert stats.error_requests == 1 and stats.success_requests == 0
+            assert stats.skipped_requests == 0 and stats.total_tokens == 0
+            assert calls == []
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        assert len(records) == 2
+        assert all("stream=True is not supported" in record["error"] for record in records)
+
+
 def test_completed_sdk_response_still_succeeds(tmp_path):
     transport = httpx.MockTransport(lambda request: httpx.Response(200, json=raw_response("completed")))
     with OpenAI(api_key="audit-placeholder", http_client=httpx.Client(transport=transport)) as sdk:
