@@ -26,7 +26,7 @@ def raw_response(**overrides):
     }
 
 
-def setup(*, remaining=None, response=None, count=10, retries=0, generation_error=False):
+def setup(*, response=None, count=10, retries=0, generation_error=False):
     calls = []
 
     def handler(request):
@@ -39,7 +39,7 @@ def setup(*, remaining=None, response=None, count=10, retries=0, generation_erro
         raw = response() if callable(response) else response
         return httpx.Response(200, json=raw if raw is not None else raw_response())
 
-    guard = LiveBudgetTransport(httpx.MockTransport(handler), free_tokens_remaining=remaining)
+    guard = LiveBudgetTransport(httpx.MockTransport(handler))
     sdk = OpenAI(api_key="test-placeholder", max_retries=retries, http_client=httpx.Client(transport=guard))
     return sdk, guard, calls
 
@@ -55,22 +55,23 @@ def generations(calls):
     return sum(path.endswith("/responses") for path, _ in calls)
 
 
-def test_probe_only_when_free_balance_unknown():
+def test_openai_probe_allows_followups_without_a_balance_setting():
     sdk, guard, calls = setup()
     with sdk:
         create(sdk)
         assert guard.report["payer"] == "openai"
         assert guard.report["reserved_tokens"] == 26
-        with pytest.raises(APIConnectionError):
-            create(sdk)
-    assert generations(calls) == 1
-    assert len(calls) == 2  # No additional count request either.
-    assert "balance unknown" in guard.report["stop_reason"]
+        create(sdk)
+    assert generations(calls) == 2
+    assert len(calls) == 4
+    assert guard.report["reserved_tokens"] == 52
+    assert guard.report["total_tokens"] == 16
+    assert guard.report["stop_reason"] is None
 
 
 @pytest.mark.parametrize("billing", [None, {}, {"payer": "developer"}, {"payer": "unexpected"}])
 def test_non_openai_or_unknown_payer_blocks_all_followups(billing):
-    sdk, guard, calls = setup(remaining=1000, response=raw_response(billing=billing))
+    sdk, guard, calls = setup(response=raw_response(billing=billing))
     with sdk:
         create(sdk)
         with pytest.raises(APIConnectionError):
@@ -88,7 +89,7 @@ def test_non_openai_or_unknown_payer_blocks_all_followups(billing):
     {"input_tokens": True, "output_tokens": 3, "total_tokens": 4},
 ])
 def test_bad_usage_retains_reservation_and_blocks_followups(usage):
-    sdk, guard, calls = setup(remaining=1000, response=raw_response(usage=usage))
+    sdk, guard, calls = setup(response=raw_response(usage=usage))
     with sdk:
         create(sdk)
         with pytest.raises(APIConnectionError):
@@ -98,9 +99,9 @@ def test_bad_usage_retains_reservation_and_blocks_followups(usage):
     assert guard.report["total_tokens"] == 0
 
 
-def test_total_budget_checked_before_generation_even_when_balance_is_large():
+def test_total_budget_checked_before_generation():
     counts = iter([10, TOKEN_BUDGET - 16])
-    sdk, guard, calls = setup(remaining=1_000_000, count=lambda: next(counts))
+    sdk, guard, calls = setup(count=lambda: next(counts))
     with sdk:
         create(sdk)
         with pytest.raises(APIConnectionError):
@@ -112,7 +113,7 @@ def test_total_budget_checked_before_generation_even_when_balance_is_large():
 
 def test_exact_total_budget_boundary_is_allowed_without_refunding_unused_output():
     counts = iter([10, TOKEN_BUDGET - 26 - 16, 10])
-    sdk, guard, calls = setup(remaining=1_000_000, count=lambda: next(counts))
+    sdk, guard, calls = setup(count=lambda: next(counts))
     with sdk:
         create(sdk)
         create(sdk)
@@ -124,8 +125,9 @@ def test_exact_total_budget_boundary_is_allowed_without_refunding_unused_output(
     assert guard.report["reserved_tokens"] == TOKEN_BUDGET
 
 
-def test_concurrent_workers_cannot_overspend_verified_balance():
-    sdk, guard, calls = setup(remaining=80)
+def test_concurrent_workers_cannot_overspend_total_budget(monkeypatch):
+    monkeypatch.setattr("_live_budget.TOKEN_BUDGET", 80)
+    sdk, guard, calls = setup()
 
     def attempt(_):
         try:
@@ -141,12 +143,12 @@ def test_concurrent_workers_cannot_overspend_verified_balance():
     assert sum(results) == 2
     assert generations(calls) == 3
     assert guard.report["reserved_tokens"] == 78
-    assert guard.report["free_tokens_remaining"] == 2
+    assert "Total token budget" in guard.report["stop_reason"]
     assert guard.report["total_tokens"] == 24  # No cache/reasoning double counting.
 
 
 def test_transport_failure_blocks_sdk_retries_and_keeps_reservation():
-    sdk, guard, calls = setup(remaining=1000, retries=1, generation_error=True)
+    sdk, guard, calls = setup(retries=1, generation_error=True)
     with sdk, pytest.raises(APIConnectionError):
         create(sdk)
     assert generations(calls) == 1 and len(calls) == 2
@@ -156,7 +158,7 @@ def test_transport_failure_blocks_sdk_retries_and_keeps_reservation():
 
 def test_payer_switch_blocks_already_queued_workers_before_network_use():
     responses = iter([raw_response(), raw_response(billing={"payer": "developer"})])
-    sdk, guard, calls = setup(remaining=1000, response=lambda: next(responses))
+    sdk, guard, calls = setup(response=lambda: next(responses))
 
     def attempt(_):
         try:
@@ -191,7 +193,7 @@ def test_unreadable_or_failed_preflight_and_response_stop_future_sends(failure):
             return httpx.Response(200, json={"input_tokens": 10})
         return httpx.Response(200, content=b"not JSON")
 
-    guard = LiveBudgetTransport(httpx.MockTransport(handler), free_tokens_remaining=1000)
+    guard = LiveBudgetTransport(httpx.MockTransport(handler))
     with OpenAI(api_key="test-placeholder", max_retries=0, http_client=httpx.Client(transport=guard)) as sdk:
         try:
             create(sdk)
@@ -235,7 +237,7 @@ def test_sdk_parse_failure_still_accounts_usage_and_counts_schema_before_send():
         "id": "msg_test", "type": "message", "role": "assistant", "status": "completed",
         "content": [{"type": "output_text", "text": '{"answer":', "annotations": []}],
     }]
-    sdk, guard, calls = setup(remaining=1000, response=raw)
+    sdk, guard, calls = setup(response=raw)
     with sdk:
         create(sdk)
         result = RailClient.openai(client=sdk).responses.parse(

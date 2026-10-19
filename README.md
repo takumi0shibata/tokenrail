@@ -371,20 +371,18 @@ request may be billed to you:
 TOKENRAIL_RUN_LIVE_TESTS=1 uv run pytest tests/test_live_openai.py::test_live_payer_probe -q -s
 ```
 
-The remaining tests require `TOKENRAIL_LIVE_FREE_TOKENS_REMAINING` to contain a
-verified remaining balance for the applicable organization-wide model group.
-Check the current program terms, project eligibility, and usage dashboard, and
-pause other consumers of that shared quota before supplying this value. Leave
-it unset when the balance is unknown: only the initial probe runs, and the five
-remaining tests are skipped. Then, with a verified balance, run
+To run all six checks, use
 `TOKENRAIL_RUN_LIVE_TESTS=1 uv run pytest tests/test_live_openai.py -q -s`.
-Every invocation includes a new probe and consumes a new budget.
+No prior payer or free-token balance lookup is required. Each invocation starts
+with the minimal probe and proceeds only while responses report payer `openai`
+and valid usage. Every invocation has its own budget; include earlier usage and
+reservations when running multiple invocations under a shared audit allowance.
 
 These checks use `gpt-6-luna`, capped outputs, and no SDK retries. Generation
 requests are serialized even when batch workers run concurrently. Before each
 generation, the transport calls the input-token count endpoint with the actual
 input and structured schema, then reserves input tokens plus the output cap
-against both a 100,000-token total ceiling and the verified free-token balance.
+against a 100,000-token total ceiling.
 Reservations are never refunded. The output cap includes reasoning tokens;
 cache and reasoning details are not added again to total usage.
 
@@ -392,8 +390,7 @@ A payer other than `openai`, unknown payer, missing or inconsistent usage,
 preflight failure, or transport failure blocks all subsequent sends. A response
 with payer `openai` confirms only that request's allocation; it does not promise
 future free usage. The response that reveals a payer switch may already be
-billed, and the caller-supplied balance cannot prevent other processes from
-consuming the shared quota. The normal test command skips all live checks.
+billed. The normal test command skips all live checks.
 During 0.5.0 validation, the original five live checks used 7,719 tokens over ten
 requests; that historical result does not establish today's remaining balance.
 

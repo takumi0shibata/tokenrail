@@ -38,10 +38,7 @@ def live():
     load_dotenv(Path(__file__).resolve().parents[1] / ".env")
     if not os.getenv("OPENAI_API_KEY"):
         pytest.fail("OPENAI_API_KEY is required for live tests")
-    remaining = os.getenv("TOKENRAIL_LIVE_FREE_TOKENS_REMAINING")
-    guard = LiveBudgetTransport(
-        httpx.HTTPTransport(retries=0), free_tokens_remaining=int(remaining) if remaining else None,
-    )
+    guard = LiveBudgetTransport(httpx.HTTPTransport(retries=0))
     report = guard.report
     try:
         with OpenAI(
@@ -49,7 +46,7 @@ def live():
             http_client=httpx.Client(transport=guard),
         ) as sdk:
             client = RailClient.openai(client=sdk)
-            # The only generation allowed without a verified free-token balance.
+            # Check payer with a minimal request before the remaining checks.
             client.responses.create(input="OK", **kwargs(max_output_tokens=16))
             yield client, report
     finally:
@@ -62,8 +59,8 @@ def live():
 @pytest.fixture(scope="module")
 def live_ready(live):
     _, report = live
-    if report["stop_reason"] or report["free_tokens_remaining"] is None:
-        pytest.skip(report["stop_reason"] or "Verified free-token balance required after the initial probe")
+    if report["stop_reason"]:
+        pytest.skip(report["stop_reason"])
     return live
 
 

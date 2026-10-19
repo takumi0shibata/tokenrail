@@ -24,20 +24,18 @@ class LiveBudgetTransport(httpx.BaseTransport):
     """Serialize preflight/reservation/send/accounting, including batch workers.
 
     Reservations are never refunded, even after a timeout or missing usage.
-    A known free-token balance is an externally verified snapshot, not a promise
-    about future billing. Other consumers of the shared quota must be paused.
+    Check each response's payer before allowing another request. The total
+    token ceiling bounds this run; it does not guarantee free usage.
     """
 
-    def __init__(self, inner: httpx.BaseTransport, *, free_tokens_remaining: int | None = None):
-        if free_tokens_remaining is not None and not _tokens(free_tokens_remaining):
-            raise ValueError("free_tokens_remaining must be a non-negative integer")
+    def __init__(self, inner: httpx.BaseTransport):
         self.inner = inner
         self._lock = threading.Lock()
         self.report = {
             "model": MODEL, "requests": 0, "preflight_requests": 0,
             "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
             "cached_tokens": 0, "cache_write_tokens": 0,
-            "reserved_tokens": 0, "free_tokens_remaining": free_tokens_remaining,
+            "reserved_tokens": 0,
             "payer": None, "stop_reason": None, "statuses": Counter(),
         }
 
@@ -69,8 +67,6 @@ class LiveBudgetTransport(httpx.BaseTransport):
             if probe:
                 if body.get("input") != "OK" or cap != 16 or body.get("text") or body.get("instructions"):
                     self._stop("First generation must be the minimal payer probe")
-            elif self.report["free_tokens_remaining"] is None:
-                self._stop("Free-token balance unknown; only the initial probe is authorized")
 
             # Count the exact SDK-generated input, including structured schemas.
             count_body = {key: body[key] for key in ("model", "input", "instructions", "reasoning", "text")
@@ -98,12 +94,7 @@ class LiveBudgetTransport(httpx.BaseTransport):
             reservation = input_tokens + cap
             if self.report["reserved_tokens"] + reservation > TOKEN_BUDGET:
                 self._stop("Total token budget exhausted; no generation sent")
-            remaining = self.report["free_tokens_remaining"]
-            if not probe and reservation > remaining:
-                self._stop("Verified free-token balance insufficient; no generation sent")
             self.report["reserved_tokens"] += reservation
-            if remaining is not None:
-                self.report["free_tokens_remaining"] = max(0, remaining - reservation)
             self.report["requests"] += 1
             try:
                 response = self.inner.handle_request(request)
