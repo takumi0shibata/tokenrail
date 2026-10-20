@@ -46,7 +46,7 @@ class _SubmitRateLimiter:
         max_rpm: int | None,
         max_tpm: int | None,
         window_seconds: float = 60.0,
-        time_fn: Callable[[], float] = time.time,
+        time_fn: Callable[[], float] = time.monotonic,
         sleep_fn: Callable[[float], None] = time.sleep,
     ) -> None:
         if max_rpm is not None and max_rpm < 1:
@@ -167,7 +167,8 @@ class BatchExecutor:
         self.max_tpm = max_tpm
         self._writer = _JsonlWriter(self.output_path, projector=projector)
         self._monitor = _RollingMetricsMonitor(printer=print if progress else None)
-        self._time_fn = time.time
+        # Rate windows follow elapsed time, independent of wall-clock updates.
+        self._time_fn = time.monotonic
         self._sleep_fn = time.sleep
 
     def _prepare_items(self, items: Sequence[BatchItem] | dict[str, Any]) -> list[BatchItem]:
