@@ -9,6 +9,7 @@ import pytest
 from openai import OpenAI
 from pydantic import BaseModel
 
+import tokenrail.executor as executor_module
 from tokenrail import BatchExecutor, BatchItem, RailClient
 from tokenrail._storage import _JsonlWriter
 from tokenrail.catalog import ModelCatalogFallbackWarning, calculate_cost
@@ -495,3 +496,34 @@ def test_raw_response_path_does_not_swallow_http_errors_or_resubmit():
         with pytest.raises(BadRequestError):
             RailClient.openai(client=sdk).responses.parse(model="gpt-4o", input="hello", text_format=Shape)
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("mode", ["rpm", "tpm"])
+@pytest.mark.parametrize("wall_adjustment", [0, 3600, -3600])
+def test_rate_window_ignores_wall_clock_adjustments(tmp_path, monkeypatch, mode, wall_adjustment):
+    clock = {"elapsed": 0.0, "offset": 0.0}
+    timers = SimpleNamespace(
+        time=lambda: 10000.0 + clock["elapsed"] + clock["offset"],
+        monotonic=lambda: clock["elapsed"],
+        sleep=lambda seconds: None,
+    )
+    monkeypatch.setattr(executor_module, "time", timers)
+    batch = executor(FakeAPI(), tmp_path / "results.jsonl")
+    limiter = _SubmitRateLimiter(
+        max_rpm=1 if mode == "rpm" else None,
+        max_tpm=10 if mode == "tpm" else None,
+        time_fn=batch._time_fn,
+    )
+    reservation = limiter.record_submit()
+    result = response()
+    result.usage = UsageBreakdown(input_tokens=6, total_tokens=6)
+    limiter.record_completion(result, reservation)
+
+    clock["elapsed"] = 1.0
+    clock["offset"] = wall_adjustment
+    assert not limiter.can_submit()
+    assert limiter.retry_after() == 59.0
+
+    clock["elapsed"] = 60.0
+    assert limiter.can_submit()
+    assert limiter.retry_after() == 0.0
