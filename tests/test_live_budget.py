@@ -2,14 +2,28 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 import httpx
 import pytest
-from _live_budget import MODEL, TOKEN_BUDGET, LiveBudgetTransport
+from _live_budget import MODEL, TOKEN_BUDGET, LiveBudgetTransport, LiveSafetyStop
 from openai import APIConnectionError, OpenAI
 from pydantic import BaseModel
 
 from tokenrail import RailClient
+
+
+def assert_safety_stop(exc):
+    # Older SDKs wrap transport errors; newer SDKs propagate this stop directly.
+    stop = exc.__cause__ if isinstance(exc, APIConnectionError) else exc
+    assert isinstance(stop, LiveSafetyStop)
+
+
+@contextmanager
+def safety_stop():
+    with pytest.raises((LiveSafetyStop, APIConnectionError)) as caught:
+        yield
+    assert_safety_stop(caught.value)
 
 
 def raw_response(**overrides):
@@ -74,7 +88,7 @@ def test_non_openai_or_unknown_payer_blocks_all_followups(billing):
     sdk, guard, calls = setup(response=raw_response(billing=billing))
     with sdk:
         create(sdk)
-        with pytest.raises(APIConnectionError):
+        with safety_stop():
             create(sdk)
     assert generations(calls) == 1 and len(calls) == 2
     assert guard.report["stop_reason"]
@@ -92,7 +106,7 @@ def test_bad_usage_retains_reservation_and_blocks_followups(usage):
     sdk, guard, calls = setup(response=raw_response(usage=usage))
     with sdk:
         create(sdk)
-        with pytest.raises(APIConnectionError):
+        with safety_stop():
             create(sdk)
     assert generations(calls) == 1 and len(calls) == 2
     assert guard.report["reserved_tokens"] == 26
@@ -104,7 +118,7 @@ def test_total_budget_checked_before_generation():
     sdk, guard, calls = setup(count=lambda: next(counts))
     with sdk:
         create(sdk)
-        with pytest.raises(APIConnectionError):
+        with safety_stop():
             create(sdk)
     assert generations(calls) == 1
     assert guard.report["reserved_tokens"] == 26
@@ -119,7 +133,7 @@ def test_exact_total_budget_boundary_is_allowed_without_refunding_unused_output(
         create(sdk)
         assert guard.report["reserved_tokens"] == TOKEN_BUDGET
         assert guard.report["total_tokens"] == 16
-        with pytest.raises(APIConnectionError):
+        with safety_stop():
             create(sdk)
     assert generations(calls) == 2
     assert guard.report["reserved_tokens"] == TOKEN_BUDGET
@@ -133,7 +147,8 @@ def test_concurrent_workers_cannot_overspend_total_budget(monkeypatch):
         try:
             create(sdk)
             return True
-        except APIConnectionError:
+        except (LiveSafetyStop, APIConnectionError) as exc:
+            assert_safety_stop(exc)
             return False
 
     with sdk:
@@ -149,7 +164,7 @@ def test_concurrent_workers_cannot_overspend_total_budget(monkeypatch):
 
 def test_transport_failure_blocks_sdk_retries_and_keeps_reservation():
     sdk, guard, calls = setup(retries=1, generation_error=True)
-    with sdk, pytest.raises(APIConnectionError):
+    with sdk, safety_stop():
         create(sdk)
     assert generations(calls) == 1 and len(calls) == 2
     assert guard.report["reserved_tokens"] == 26
@@ -164,7 +179,8 @@ def test_payer_switch_blocks_already_queued_workers_before_network_use():
         try:
             create(sdk)
             return True
-        except APIConnectionError:
+        except (LiveSafetyStop, APIConnectionError) as exc:
+            assert_safety_stop(exc)
             return False
 
     with sdk:
@@ -197,10 +213,12 @@ def test_unreadable_or_failed_preflight_and_response_stop_future_sends(failure):
     with OpenAI(api_key="test-placeholder", max_retries=0, http_client=httpx.Client(transport=guard)) as sdk:
         try:
             create(sdk)
-        except (APIConnectionError, ValueError):
+        except (LiveSafetyStop, APIConnectionError) as exc:
+            assert_safety_stop(exc)
+        except ValueError:
             pass
         initial_calls = len(calls)
-        with pytest.raises(APIConnectionError):
+        with safety_stop():
             create(sdk)
     assert guard.report["stop_reason"]
     assert len(calls) == initial_calls
@@ -210,7 +228,7 @@ def test_unreadable_or_failed_preflight_and_response_stop_future_sends(failure):
 @pytest.mark.parametrize("count", [None, -1, True, "10", 129])
 def test_invalid_or_large_probe_count_prevents_generation(count):
     sdk, guard, calls = setup(count=count)
-    with sdk, pytest.raises(APIConnectionError):
+    with sdk, safety_stop():
         create(sdk)
     assert generations(calls) == 0
     assert guard.report["reserved_tokens"] == 0
@@ -222,7 +240,7 @@ def test_invalid_or_large_probe_count_prevents_generation(count):
 ])
 def test_unsafe_probe_payload_is_rejected_without_network(kwargs):
     sdk, guard, calls = setup()
-    with sdk, pytest.raises(APIConnectionError):
+    with sdk, safety_stop():
         create(sdk, **kwargs)
     assert calls == []
     assert guard.report["stop_reason"]
