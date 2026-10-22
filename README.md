@@ -16,7 +16,12 @@ It focuses on:
 - per-model token / cost monitoring with ETA progress reporting
 - resumable JSONL result writing with the full API response
 
-Fully typed (PEP 561), supports Python 3.10+.
+The package includes type annotations and PEP 561 metadata. It requires Python
+3.10+ and the OpenAI Python SDK (installed automatically). You need an OpenAI
+API key and access to the model you request. API calls can incur charges.
+
+Batches run locally in threads using the Responses API; this is not a wrapper
+for OpenAI’s hosted Batch API.
 
 The library is in beta. The public API is still evolving, and breaking changes
 may occur between 0.x minor versions.
@@ -29,49 +34,72 @@ uv add tokenrail
 pip install tokenrail
 ```
 
-To track an unreleased revision instead, depend on the Git repository directly:
-
-```toml
-[tool.uv.sources]
-tokenrail = { git = "https://github.com/takumi0shibata/tokenrail", branch = "main" }
-```
-
-Set your OpenAI API key in the consuming project before use:
+Set your API key in the environment before running Python:
 
 ```bash
-export OPENAI_API_KEY=...
+export OPENAI_API_KEY="your-api-key"
 ```
 
+The library does not load `.env` files automatically. If your application uses
+one, load it before constructing the client. Do not commit API keys or result
+files containing sensitive prompts and responses.
+
 ## Quick start
+
+Send one request and inspect its result:
+
+```python
+from tokenrail import RailClient
+
+client = RailClient.openai(timeout=60, max_retries=2)
+response = client.responses.create(
+    model="gpt-6-luna",
+    input="Explain what a prime number is in one sentence.",
+    reasoning_effort="none",
+    max_output_tokens=128,
+)
+if response.error:
+    raise RuntimeError(response.error)
+print(response.output_text)
+print(response.usage.total_tokens)
+```
+
+Use a model available to your account. `responses.create()` returns a
+`NormalizedResponse`, not the SDK response object. Transport and request errors
+raise exceptions; an API response that is incomplete or reports an error is
+returned with `response.error` set. Inspect that field before using the output.
+
+## Run a batch
+
+This example is independent of the quick start. Each dictionary key is a stable
+job ID; each value is the input for one request.
 
 ```python
 from tokenrail import BatchExecutor, RailClient, batch_items_from_queries
 
-client = RailClient.openai(max_retries=6)
-
-queries = {
-    "1": [{"role": "user", "content": "Summarize this paper in 3 bullets."}],
-    "2": [{"role": "user", "content": "Extract the key assumptions."}],
-}
-
+client = RailClient.openai(timeout=60, max_retries=2)
 items = batch_items_from_queries(
-    queries,
-    model="gpt-5.4-mini-2026-03-17",
-    reasoning_effort="medium",
-    verbosity="low",
+    {
+        "prime": "Explain a prime number in one sentence.",
+        "factor": "Explain a factor in one sentence.",
+    },
+    model="gpt-6-luna",
+    reasoning_effort="none",
+    max_output_tokens=128,
 )
-
-executor = BatchExecutor(
+stats = BatchExecutor(
     client=client,
-    max_workers=16,
-    max_rpm=500,
-    max_tpm=200_000,
     output_path="out/results.jsonl",
-)
-
-stats = executor.run(items)
+    max_workers=2,
+    max_rpm=30,
+).run(items)
 print(stats.to_dict())
 ```
+
+Choose concurrency and rate limits for your account. Run the same batch again
+with the same output path to skip saved successes and retry failed or unfinished
+jobs. Use a new path when changing inputs or settings; see [Resume behavior](#resume-behavior).
+The following batch snippets reuse `client` and `items` from this example.
 
 ## Result saving
 
@@ -105,137 +133,86 @@ and `status` with the actual result, so field selection cannot break resume or
 hide failures. A projector replaces the default record; unselected fields,
 including `raw_response`, are omitted.
 
-## Prompt caching
+## Structured output
 
-tokenrail forwards OpenAI's prompt-cache settings and input content as supplied.
-It does not detect shared prefixes, insert breakpoints, generate or split keys,
-prewarm caches, or impose cache-specific submit limits. These settings work with
-both `responses.create(...)` and `responses.parse(...)`, including batch items.
-
-| Setting | Purpose |
-| --- | --- |
-| `prompt_cache_options` | Cache mode, TTL, prewarming, and diagnostics where supported |
-| `prompt_cache_breakpoint` inside `input` content | The end of a reusable prefix |
-| `prompt_cache_key` | A caller-supplied key, preserved exactly |
-| `prompt_cache_retention` | Retention for older models that support it |
-
-Omitting these settings keeps the OpenAI API defaults, including implicit
-caching. On GPT-5.6 and later, writing an eligible prefix costs 1.25 times the
-ordinary input rate, so a prefix that is never reused can cost more than an
-uncached input. Setting support and cache eligibility depend on the model.
-
-Use the API defaults:
-
-```python
-from tokenrail import RailClient
-
-client = RailClient.openai()
-response = client.responses.create(model="gpt-6.1-sol", input="Summarize this paper.")
-```
-
-Cache only a reusable prefix on GPT-5.6 and later. Put the shared content in its
-own block and mark its end; content after the breakpoint stays outside the cache
-write. The prefix must render to at least 1,024 visible input tokens. Top-level
-`instructions` cannot contain a breakpoint, so supply reusable instructions in
-a developer content block:
-
-```python
-from tokenrail import BatchExecutor, batch_items_from_queries
-
-shared_block = {
-    "type": "input_text",
-    "text": "Shared rubric, examples, and reference material ...",  # At least 1,024 tokens.
-    "prompt_cache_breakpoint": {"mode": "explicit"},
-}
-items = batch_items_from_queries(
-    {
-        item_id: [
-            {"role": "developer", "content": [shared_block]},
-            {"role": "user", "content": question},
-        ]
-        for item_id, question in {
-            "paper-1": "Summarize paper one.",
-            "paper-2": "Summarize paper two.",
-        }.items()
-    },
-    model="gpt-6.1-sol",
-    prompt_cache_options={"mode": "explicit"},
-)
-stats = BatchExecutor(client=client, output_path="out/cached-results.jsonl", max_workers=16, max_rpm=120).run(items)
-print(stats.cached_tokens)       # Tokens read from cache.
-print(stats.cache_write_tokens)  # Tokens newly written to cache.
-```
-
-Avoid prompt-cache reads and writes on GPT-5.6 and later by using explicit mode
-with no breakpoints:
-
-```python
-response = client.responses.create(
-    model="gpt-6.1-sol",
-    input="A one-off prompt ...",
-    prompt_cache_options={"mode": "explicit"},
-)
-```
-
-Choose keys, breakpoints, and reuse according to your workload. When supplying a
-key, keep it stable across related requests. tokenrail records cache read/write
-tokens and estimates their costs; it does not guarantee a hit or a saving.
-Conflicting values supplied in normal request arguments and `extra_body` raise
-`ValueError` before sending. `store=False` controls response storage, not prompt
-caching. See the [OpenAI prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching)
-for current model support, pricing, and cache lifetime.
-
-## Structured output batches
-
-Pass a Pydantic model as `text_format` when building batch items. `BatchExecutor`
-will call `responses.parse(...)` for those items and store the validated object
-on `response.output_parsed`.
+Use `responses.parse()` with a Pydantic model to validate structured output:
 
 ```python
 from pydantic import BaseModel
 
-from tokenrail import BatchExecutor, RailClient, batch_items_from_queries
+from tokenrail import RailClient
 
 
-class PaperSummary(BaseModel):
-    title: str
-    key_assumptions: list[str]
+class Summary(BaseModel):
+    topic: str
+    main_point: str
 
 
-client = RailClient.openai(max_retries=6)
-
-items = batch_items_from_queries(
-    {
-        "paper-1": [{"role": "user", "content": "Extract the title and assumptions from this paper: ..."}],
-        "paper-2": [{"role": "user", "content": "Extract the title and assumptions from this paper: ..."}],
-    },
-    model="gpt-5.4-mini-2026-03-17",
-    reasoning_effort="medium",
-    text_format=PaperSummary,
+client = RailClient.openai(timeout=60, max_retries=2)
+response = client.responses.parse(
+    model="gpt-6-luna",
+    input="Summarize: A prime number is an integer greater than one with exactly two positive divisors.",
+    reasoning_effort="none",
+    max_output_tokens=256,
+    text_format=Summary,
 )
-
-executor = BatchExecutor(
-    client=client,
-    output_path="out/structured-results.jsonl",
-    max_workers=16,
-    projector=lambda response: {
-        "summary": response.output_parsed.model_dump(mode="json") if response.output_parsed else None,
-        "refusal": response.refusal,
-        "usage": response.usage.to_dict(),
-    },
-)
-
-stats = executor.run(items)
-print(stats.to_dict())
+if response.error:
+    raise RuntimeError(response.error)
+if response.refusal:
+    print(response.refusal)
+elif response.output_parsed is not None:
+    print(response.output_parsed.model_dump())
 ```
 
-Use `response_format={...}` with `client.responses.create(...)` when you want to
-provide a raw JSON Schema yourself. Use `text_format=YourModel` for Pydantic
-parsing; `response_format` and `text_format` cannot be used together. Do not set
-`verbosity` on structured output batches that use `text_format`, because the
-OpenAI SDK's `responses.parse(...)` path does not accept that combination.
+For structured batches, pass `text_format=Summary` to
+`batch_items_from_queries()` or include it in each `BatchItem.request_kwargs`.
+The executor selects `responses.parse()` for those items. Saved default records
+include the parsed output in JSON form.
 
-## Configuration notes
+Use `response_format={...}` with `responses.create()` to supply a raw JSON
+Schema without Pydantic parsing. Do not combine `response_format` with
+`text_format`, or supply `verbosity` with `text_format`; these combinations
+are rejected before sending.
+
+## Prompt caching
+
+tokenrail forwards cache settings and input content to OpenAI. It does not
+insert breakpoints, generate keys, prewarm caches automatically, or guarantee
+cache hits or savings. Model support, cache lifetime and prices are determined
+by the API; consult the [OpenAI prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching).
+
+| Setting | Passed through as |
+| --- | --- |
+| `prompt_cache_key` | A caller-supplied key, preserved exactly |
+| `prompt_cache_options` | Cache options supported by the selected model |
+| `prompt_cache_retention` | Retention for models that support it |
+| `prompt_cache_breakpoint` | A marker inside an input content block |
+
+These settings work with create, parse and batch requests. Omitting them keeps
+the API defaults. Keep keys stable for related requests and supply reusable
+content according to the model’s caching requirements. `store=False` controls
+response storage, not prompt caching.
+
+Cache reads and writes are reported separately as `cached_tokens` and
+`cache_write_tokens` in usage and batch statistics. Conflicting values in normal
+arguments and `extra_body` raise `ValueError` before sending.
+
+## Configuration and API reference
+
+| API | Purpose |
+| --- | --- |
+| `RailClient.openai(...)` | Construct a client or wrap an existing OpenAI SDK client with `client=...` |
+| `client.responses.create(...)` | Return a normalized text or JSON response |
+| `client.responses.parse(..., text_format=...)` | Return validated Pydantic output |
+| `batch_items_from_queries(queries, **kwargs)` | Apply shared request settings to an ID-to-input mapping |
+| `BatchItem(id, request_kwargs)` | Supply different request settings for individual jobs |
+| `BatchExecutor(client=..., output_path=..., ...)` | Run and persist jobs; `run(items)` returns `StatsSnapshot` |
+
+`RailClient.openai()` accepts `api_key`, `organization`, `base_url`, `timeout`
+and `max_retries`. The default retry count is 2. For explicit connection cleanup,
+create an OpenAI SDK client in its context manager and inject it with `client=`;
+configure credentials, timeout and retries on that injected client.
+
 
 - `max_retries` configures the OpenAI Python SDK client's built-in retry behavior. `tokenrail` does not add its own retry loop on top.
 - Omitting `timeout` (or passing `None`) preserves the SDK's default timeout. Pass a number of seconds to override it.
@@ -319,41 +296,43 @@ The monitor reads the payer from `cost`, falling back to `billing.payer` when
 unavailable. Unknown payer values count toward `unknown_payer_requests` but
 do not drive payer transitions.
 
-## Cost tracking
+## Cost tracking and model support
 
-Standard-tier base prices in USD per million tokens, checked against the
-[official OpenAI pricing page](https://developers.openai.com/api/docs/pricing)
-on October 8, 2026:
+`response.usage` records token counts; `response.cost` estimates USD costs using
+the checked-in [model catalog](src/tokenrail/catalog.py). These are estimates,
+not invoices. Prices can change, and the catalog does not account for all
+service tiers, long-context rates or regional adjustments. Refer to
+[OpenAI pricing](https://developers.openai.com/api/docs/pricing) for current rates.
 
-| Model | Input | Cached input | Cache writes | Output |
-| --- | ---: | ---: | ---: | ---: |
-| `gpt-6-astra` | $10.00 | $1.00 | $12.50 | $50.00 |
-| `gpt-6.1-sol` | $2.00 | $0.10 | $2.50 | $10.00 |
-| `gpt-6-sol` | $2.00 | $0.20 | $2.50 | $10.00 |
-| `gpt-6-luna` | $0.10 | $0.01 | $0.125 | $0.50 |
-| `gpt-5.6-sol` / `gpt-5.6` | $4.00 | $0.40 | $5.00 | $20.00 |
-| `gpt-5.6-terra` | $2.00 | $0.20 | $2.50 | $12.00 |
-| `gpt-5.6-luna` | $0.20 | $0.02 | $0.25 | $1.20 |
+Models without a pricing entry return `cost=None`. Unregistered model names
+that partially match known entries can use fallback capabilities or prices and
+emit `ModelCatalogFallbackWarning`. Check the warning before relying on the
+estimate or supported parameters.
 
-GPT-5.6 Sol uses the current promotional rate, available at least through
-November 21, 2026 according to OpenAI.
+The capability catalog validates options such as `reasoning_effort`,
+`temperature` and `top_p` before sending. Support is model-specific; for example,
+GPT-6 Luna requires `reasoning_effort="none"` when setting sampling parameters.
 
-- GPT-5.6 and GPT-6 cache writes are estimated at 1.25 times each model's ordinary input rate and are tracked separately from cache reads.
-- Costs use the checked-in base, standard-tier pricing table (`tokenrail.catalog`). The estimate does not apply GPT-5.6/GPT-6 long-context rates above 272K input tokens, Batch/Fast/Flex/Ultrafast pricing, or regional uplifts. The official pricing page is authoritative.
-- Models without a pricing entry get `cost=None`. If an unregistered model partially matches an older catalog entry, tokenrail emits `ModelCatalogFallbackWarning` once per model and names the capability and pricing entries used as fallbacks.
-- OpenAI cost allocation is inferred from `billing.payer` in the response body. When `payer == "openai"`, the nominal request cost is counted as OpenAI-covered rather than developer-billed.
-- `reasoning_effort` is gated to supported `gpt-5`, `gpt-6`, and `o`-series models in the checked-in capability registry.
-- GPT-6 Astra and GPT-6.1 Sol support `low`, `medium`, `high`, `xhigh`, and `max` reasoning efforts; `temperature` and `top_p` are rejected before sending a request. GPT-6 Sol and Luna additionally support `none`, which must be explicitly selected to use `temperature` or `top_p`. These checks apply to both `responses.create(...)` and `responses.parse(...)`. See the [GPT-6 guide](https://developers.openai.com/api/docs/guides/latest-model).
+Where the API includes `billing.payer`, tokenrail uses it to attribute nominal
+costs. A payer of `openai` is recorded as OpenAI-covered. Unknown payer values
+remain unknown; monitoring does not enforce a spending limit or stop batches
+when the payer changes.
 
-Fallback warnings can be filtered with Python's standard warning controls:
+## Troubleshooting
 
-```python
-import warnings
+| Symptom | What to check |
+| --- | --- |
+| Missing key or authentication error | Set `OPENAI_API_KEY` in the process environment; confirm account and model access. |
+| `ValueError` before a request | Check model capabilities, incompatible structured-output options, and batch IDs. |
+| Rate-limit errors | Reduce `max_workers`/`max_rpm`/`max_tpm`; account for other workloads and SDK retries. |
+| No requests on a repeat run | Successful IDs already exist in the JSONL file. Use a new path for a new workload. |
+| Missing parsed output | Inspect `error`, `refusal`, `status` and `raw_response`; incomplete output may require a higher output cap. |
+| Missing cost estimate | The model may not have a catalog entry; token usage can still be available. |
+| File-writing or projector error | Fix the destination or serialization issue before resuming; unsaved requests may run again. |
 
-from tokenrail.catalog import ModelCatalogFallbackWarning
-
-warnings.filterwarnings("ignore", category=ModelCatalogFallbackWarning)
-```
+Streaming and background polling are unsupported. Resume is not an exactly-once
+guarantee, and token throttling is not a monetary budget. See the configuration
+and resume sections before running large workloads.
 
 ## Development
 
@@ -363,36 +342,28 @@ uv run pytest
 uv run ruff check src tests
 ```
 
-Live API checks are opt-in and spend tokens. Set `OPENAI_API_KEY` in the
-environment or a local `.env`. Start with the minimal payer probe; this first
-request may be billed to you:
+Live API checks are optional and can incur charges. They are skipped by default.
+To run them from a repository checkout, provide `OPENAI_API_KEY` in the environment
+or a local `.env`, then explicitly enable them:
 
 ```bash
-TOKENRAIL_RUN_LIVE_TESTS=1 uv run pytest tests/test_live_openai.py::test_live_payer_probe -q -s
+TOKENRAIL_RUN_LIVE_TESTS=1 uv run pytest tests/test_live_openai.py -q -s
 ```
 
-To run all six checks, use
-`TOKENRAIL_RUN_LIVE_TESTS=1 uv run pytest tests/test_live_openai.py -q -s`.
-No prior payer or free-token balance lookup is required. Each invocation starts
-with the minimal probe and proceeds only while responses report payer `openai`
-and valid usage. Every invocation has its own budget; include earlier usage and
-reservations when running multiple invocations under a shared audit allowance.
+The test-only transport uses GPT-6 Luna, disables SDK retries and serializes
+requests. It reserves counted input plus capped output against a 100,000-token
+limit per invocation and checks each response’s payer and usage before allowing
+further sends. Reservations are not refunded. Unknown/non-OpenAI payer, invalid
+usage or transport failures stop further sends; the request that detects a
+payer change may already be charged. This guard is not part of the installed
+library. Repeated invocations have separate budgets.
 
-These checks use `gpt-6-luna`, capped outputs, and no SDK retries. Generation
-requests are serialized even when batch workers run concurrently. Before each
-generation, the transport calls the input-token count endpoint with the actual
-input and structured schema, then reserves input tokens plus the output cap
-against a 100,000-token total ceiling.
-Reservations are never refunded. The output cap includes reasoning tokens;
-cache and reasoning details are not added again to total usage.
+## Related documentation
 
-A payer other than `openai`, unknown payer, missing or inconsistent usage,
-preflight failure, or transport failure blocks all subsequent sends. A response
-with payer `openai` confirms only that request's allocation; it does not promise
-future free usage. The response that reveals a payer switch may already be
-billed. The normal test command skips all live checks.
-During 0.5.0 validation, the original five live checks used 7,719 tokens over ten
-requests; that historical result does not establish today's remaining balance.
+- [Changelog](CHANGELOG.md) and [releases](https://github.com/takumi0shibata/tokenrail/releases)
+- [API types and result fields](src/tokenrail/types.py)
+- [Model capabilities and pricing catalog](src/tokenrail/catalog.py)
+- [Report a bug](https://github.com/takumi0shibata/tokenrail/issues)
 
 ## License
 
