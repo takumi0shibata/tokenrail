@@ -328,6 +328,7 @@ class OpenAIProvider(BaseProvider):
         metadata: JsonDict | None,
         started_at: float,
         completed_at: float,
+        latency_seconds: float,
         output_parsed: Any | None = None,
         refusal: str | None = None,
     ) -> NormalizedResponse:
@@ -356,7 +357,7 @@ class OpenAIProvider(BaseProvider):
             timing=TimingBreakdown(
                 started_at=started_at,
                 completed_at=completed_at,
-                latency_seconds=completed_at - started_at,
+                latency_seconds=latency_seconds,
             ),
             metadata=metadata,
             status=status,
@@ -402,6 +403,7 @@ class OpenAIProvider(BaseProvider):
         )
 
         started_at = time.time()
+        started_monotonic = time.monotonic()
         response = self._responses.create(**payload)
         completed_at = time.time()
         return self._normalize_response(
@@ -412,6 +414,7 @@ class OpenAIProvider(BaseProvider):
             metadata=metadata,
             started_at=started_at,
             completed_at=completed_at,
+            latency_seconds=time.monotonic() - started_monotonic,
         )
 
     def parse(
@@ -455,6 +458,7 @@ class OpenAIProvider(BaseProvider):
         )
 
         started_at = time.time()
+        started_monotonic = time.monotonic()
         raw_api = getattr(self._responses, "with_raw_response", None)
         if raw_api is None:
             # Keep supporting injected clients implementing only create/parse.
@@ -476,6 +480,7 @@ class OpenAIProvider(BaseProvider):
                     metadata=metadata,
                     started_at=started_at,
                     completed_at=time.time(),
+                    latency_seconds=time.monotonic() - started_monotonic,
                 )
                 parse_error = f"Structured output parsing failed ({type(exc).__name__}): {exc}"
                 normalized.error = f"{normalized.error}; {parse_error}" if normalized.error else parse_error
@@ -489,6 +494,7 @@ class OpenAIProvider(BaseProvider):
             metadata=metadata,
             started_at=started_at,
             completed_at=completed_at,
+            latency_seconds=time.monotonic() - started_monotonic,
             output_parsed=_extract_output_parsed(response, raw),
             refusal=_extract_refusal(response, raw),
         )
