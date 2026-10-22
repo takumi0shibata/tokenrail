@@ -10,6 +10,22 @@ designation was premature and does not describe the project's current status.
 
 ## [Unreleased]
 
+## [0.5.4] - Unreleased
+
+### Fixed
+
+- Use a monotonic clock for RPM and TPM rate-limit windows so system clock
+  corrections cannot prematurely release requests or prolong throttling.
+- Measure response latency with a monotonic clock for create, parse, and
+  parse-error responses, including batch output. Preserve wall-clock start
+  and completion timestamps.
+
+### Changed
+
+- Remove the prior free-token balance lookup requirement from opt-in live
+  tests. Retain per-response payer and usage checks, serialized requests,
+  non-refundable reservations, and the 100,000-token budget.
+
 ## [0.5.3] - 2026-10-18
 
 ### Fixed
