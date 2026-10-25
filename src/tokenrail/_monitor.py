@@ -79,6 +79,7 @@ class _RollingMetricsMonitor:
         return sys.stdout.isatty()
 
     def _reset_display_state_unlocked(self) -> None:
+        self._started_monotonic: float | None = None
         self._pending_payer: str | None = None
         self._payer_run = 0
         self._last_summary_at: float | None = None
@@ -99,6 +100,7 @@ class _RollingMetricsMonitor:
     ) -> StatsSnapshot:
         with self._lock:
             now = time.time()
+            self._started_monotonic = time.monotonic()
             self._snapshot.total_requests = total_requests
             self._snapshot.todo_requests = todo_requests
             self._snapshot.skipped_requests = skipped_requests
@@ -106,7 +108,7 @@ class _RollingMetricsMonitor:
             self._snapshot.started_at = now
             self._snapshot.last_updated_at = now
             self._snapshot.elapsed_seconds = 0.0
-            self._last_summary_at = now
+            self._last_summary_at = self._started_monotonic
             self._last_model = None
             if todo_requests == 0:
                 self._snapshot.eta_seconds = 0.0
@@ -120,16 +122,16 @@ class _RollingMetricsMonitor:
             self.printer(self.format_header(snapshot))
         return snapshot
 
-    def _recompute_time_fields_unlocked(self, now: float) -> None:
+    def _recompute_time_fields_unlocked(self, now: float, monotonic_now: float) -> None:
         self._snapshot.last_updated_at = now
-        if self._snapshot.started_at is None:
+        if self._started_monotonic is None:
             self._snapshot.elapsed_seconds = 0.0
             self._snapshot.remaining_requests = self._snapshot.todo_requests
             self._snapshot.eta_seconds = None
             self._snapshot.estimated_finished_at = None
             return
 
-        self._snapshot.elapsed_seconds = max(now - self._snapshot.started_at, 0.0)
+        self._snapshot.elapsed_seconds = max(monotonic_now - self._started_monotonic, 0.0)
         self._snapshot.remaining_requests = max(self._snapshot.todo_requests - self._snapshot.processed_requests, 0)
         if self._snapshot.todo_requests == 0:
             self._snapshot.eta_seconds = 0.0
@@ -196,9 +198,10 @@ class _RollingMetricsMonitor:
         """Fold ``response`` into the running totals and return a snapshot copy."""
         with self._lock:
             now = time.time()
+            monotonic_now = time.monotonic()
             total_tokens = response.usage.total_tokens or (response.usage.input_tokens + response.usage.output_tokens)
-            self._events.append((now, total_tokens))
-            cutoff = now - self.window_seconds
+            self._events.append((monotonic_now, total_tokens))
+            cutoff = monotonic_now - self.window_seconds
             while self._events and self._events[0][0] < cutoff:
                 self._events.popleft()
 
@@ -263,7 +266,7 @@ class _RollingMetricsMonitor:
 
             self._snapshot.rolling_rpm = float(len(self._events))
             self._snapshot.rolling_tpm = float(sum(tokens for _, tokens in self._events))
-            self._recompute_time_fields_unlocked(now)
+            self._recompute_time_fields_unlocked(now, monotonic_now)
 
             show_model = response.model != self._last_model
             self._last_model = response.model
@@ -271,11 +274,11 @@ class _RollingMetricsMonitor:
             if (
                 self.summary_interval is not None
                 and self._last_summary_at is not None
-                and now - self._last_summary_at >= self.summary_interval
+                and monotonic_now - self._last_summary_at >= self.summary_interval
             ):
                 summary_due = True
             if summary_due:
-                self._last_summary_at = now
+                self._last_summary_at = monotonic_now
             snapshot = self._copy_snapshot_unlocked()
 
         if self.printer is not None:
@@ -299,7 +302,7 @@ class _RollingMetricsMonitor:
             self._snapshot.total_requests = total_requests
             self._snapshot.skipped_requests = skipped_requests
             self._snapshot.todo_requests = max(total_requests - skipped_requests, 0)
-            self._recompute_time_fields_unlocked(time.time())
+            self._recompute_time_fields_unlocked(time.time(), time.monotonic())
             snapshot = self._copy_snapshot_unlocked()
 
         if self.printer is not None and not self.verbose:

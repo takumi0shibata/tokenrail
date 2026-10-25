@@ -293,11 +293,64 @@ class MonitorAndExecutorTests(unittest.TestCase):
             summary_interval=30.0,
             color=False,
         )
-        with patch("tokenrail._monitor.time.time", side_effect=[0.0, 10.0, 31.0]):
+        with (
+            patch("tokenrail._monitor.time.time", side_effect=[0.0, 10.0, 31.0]),
+            patch("tokenrail._monitor.time.monotonic", side_effect=[0.0, 10.0, 31.0]),
+        ):
             timed_monitor.start(total_requests=2, todo_requests=2, skipped_requests=0)
             timed_monitor.record(_response("1"))
             timed_monitor.record(_response("2"))
         self.assertEqual(len([line for line in timed_output if line.startswith("──")]), 1)
+
+    def test_clock_adjustments_do_not_change_durations_windows_or_summary_cadence(self):
+        for shift in (-60.0, 0.0, 60.0):
+            with self.subTest(shift=shift):
+                output = []
+                monitor = _RollingMetricsMonitor(printer=output.append, summary_every=50, color=False)
+                with (
+                    patch("tokenrail._monitor.time.time") as wall,
+                    patch("tokenrail._monitor.time.monotonic") as elapsed,
+                ):
+                    wall.return_value, elapsed.return_value = 10_000.0, 100.0
+                    monitor.start(total_requests=4, todo_requests=4, skipped_requests=0)
+                    wall.return_value, elapsed.return_value = 10_001.0, 101.0
+                    monitor.record(_response("1"))
+                    wall.return_value, elapsed.return_value = 10_002.0 + shift, 102.0
+                    snapshot = monitor.record(_response("2"))
+                    self.assertEqual(snapshot.elapsed_seconds, 2.0)
+                    self.assertEqual(snapshot.eta_seconds, 2.0)
+                    self.assertEqual(snapshot.rolling_rpm, 2.0)
+                    self.assertEqual(snapshot.rolling_tpm, 2_560.0)
+                    self.assertEqual(snapshot.started_at, 10_000.0)
+                    self.assertEqual(snapshot.last_updated_at, 10_002.0 + shift)
+                    self.assertEqual(snapshot.estimated_finished_at, 10_004.0 + shift)
+                    self.assertEqual(len([line for line in output if line.startswith("──")]), 0)
+
+                    wall.return_value, elapsed.return_value = 10_031.0 + shift, 131.0
+                    monitor.record(_response("3"))
+                    self.assertEqual(len([line for line in output if line.startswith("──")]), 1)
+                    wall.return_value, elapsed.return_value = 10_063.0 + shift, 163.0
+                    snapshot = monitor.record(_response("4"))
+                    self.assertEqual(snapshot.rolling_rpm, 2.0)
+                    self.assertEqual(snapshot.rolling_tpm, 2_560.0)
+                    self.assertEqual(len([line for line in output if line.startswith("──")]), 2)
+                    wall.return_value, elapsed.return_value = 10_064.0 + shift, 164.0
+                    snapshot = monitor.finalize(total_requests=4, skipped_requests=0)
+                    self.assertEqual(snapshot.elapsed_seconds, 64.0)
+                    self.assertEqual(snapshot.eta_seconds, 0.0)
+                    self.assertEqual(snapshot.last_updated_at, 10_064.0 + shift)
+
+                    monitor.reset()
+                    self.assertIsNone(monitor.snapshot().started_at)
+                    snapshot = monitor.record(_response("before-start"))
+                    self.assertEqual(snapshot.elapsed_seconds, 0.0)
+                    self.assertIsNone(snapshot.eta_seconds)
+                    monitor.reset()
+                    monitor.start(total_requests=1, todo_requests=1, skipped_requests=0)
+                    wall.return_value, elapsed.return_value = 10_065.0 + shift, 165.0
+                    snapshot = monitor.record(_response("new-run"))
+                    self.assertEqual(snapshot.elapsed_seconds, 1.0)
+                    self.assertEqual(snapshot.rolling_rpm, 1.0)
 
     def test_finalize_prints_totals_and_sorted_model_breakdown(self):
         output = []
