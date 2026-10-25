@@ -221,16 +221,6 @@ class OpenAIProvider(BaseProvider):
     ) -> JsonDict:
         if "text_format" in extra:
             raise ValueError("text_format requires responses.parse(); use client.responses.parse(...)")
-        self._validate_capabilities(
-            model=model,
-            reasoning_effort=reasoning_effort,
-            verbosity=verbosity,
-            temperature=temperature,
-            top_p=top_p,
-            max_output_tokens=max_output_tokens,
-            response_format=response_format,
-        )
-
         payload: JsonDict = {"model": model, "input": input}
         if reasoning_effort is not None:
             payload["reasoning"] = {"effort": reasoning_effort}
@@ -257,8 +247,7 @@ class OpenAIProvider(BaseProvider):
             payload["prompt_cache_key"] = prompt_cache_key
         if prompt_cache_retention is not None:
             payload["prompt_cache_retention"] = prompt_cache_retention
-        payload.update(extra)
-        return _prepare_payload(payload, prompt_cache_options)
+        return self._prepare_and_validate_payload(payload, extra, prompt_cache_options)
 
     def build_parse_payload(
         self,
@@ -284,16 +273,6 @@ class OpenAIProvider(BaseProvider):
             raise ValueError("text_format is required for responses.parse()")
         if response_format is not None:
             raise ValueError("response_format and text_format cannot be used together")
-        self._validate_capabilities(
-            model=model,
-            reasoning_effort=reasoning_effort,
-            verbosity=verbosity,
-            temperature=temperature,
-            top_p=top_p,
-            max_output_tokens=max_output_tokens,
-            response_format={"type": "text_format"},
-        )
-
         payload: JsonDict = {"model": model, "input": input, "text_format": text_format}
         if reasoning_effort is not None:
             payload["reasoning"] = {"effort": reasoning_effort}
@@ -315,8 +294,42 @@ class OpenAIProvider(BaseProvider):
             payload["prompt_cache_key"] = prompt_cache_key
         if prompt_cache_retention is not None:
             payload["prompt_cache_retention"] = prompt_cache_retention
-        payload.update(extra)
-        return _prepare_payload(payload, prompt_cache_options)
+        return self._prepare_and_validate_payload(payload, extra, prompt_cache_options)
+
+    def _prepare_and_validate_payload(
+        self, payload: JsonDict, extra: JsonDict, prompt_cache_options: JsonDict | None
+    ) -> JsonDict:
+        # Native SDK settings may extend aliases, but must not silently replace them.
+        for field, value in extra.items():
+            if field in payload:
+                existing = payload[field]
+                if isinstance(existing, dict) and isinstance(value, dict):
+                    for key in existing.keys() & value.keys():
+                        if existing[key] != value[key]:
+                            raise ValueError(f"{field}.{key} conflicts with the corresponding convenience argument")
+                    value = {**existing, **value}
+                elif existing != value:
+                    raise ValueError(f"{field} conflicts with the corresponding convenience argument")
+            payload[field] = value
+
+        payload = _prepare_payload(payload, prompt_cache_options)
+        # Validate what the SDK will send, including fields supplied only in extra_body.
+        body = {**payload, **(payload.get("extra_body") or {})}
+        reasoning = body.get("reasoning")
+        text = body.get("text")
+        self._validate_capabilities(
+            model=body["model"],
+            reasoning_effort=reasoning.get("effort") if isinstance(reasoning, dict) else None,
+            verbosity=text.get("verbosity") if isinstance(text, dict) else body.get("verbosity"),
+            temperature=body.get("temperature"),
+            top_p=body.get("top_p"),
+            max_output_tokens=body.get("max_output_tokens"),
+            response_format=(
+                {"type": "text_format"} if "text_format" in payload
+                else text.get("format") if isinstance(text, dict) else None
+            ),
+        )
+        return payload
 
     def _normalize_response(
         self,
