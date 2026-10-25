@@ -135,7 +135,10 @@ def test_progress_only_controls_display(tmp_path, capsys):
         executor = BatchExecutor(
             client=client(FakeAPI()), output_path=tmp_path / f"{progress}.jsonl", progress=progress
         )
-        with patch("tokenrail._monitor.time.time", return_value=100):
+        with (
+            patch("tokenrail._monitor.time.time", return_value=100),
+            patch("tokenrail._monitor.time.monotonic", return_value=10),
+        ):
             snapshots.append(executor.run(batch()).to_dict())
         output = capsys.readouterr().out
         if progress:
