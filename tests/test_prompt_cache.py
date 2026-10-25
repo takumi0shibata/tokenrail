@@ -70,6 +70,79 @@ def _input(question: str) -> list[dict]:
 
 
 class PromptCachePassthroughTests(unittest.TestCase):
+    def test_final_request_settings_are_validated_before_sending(self):
+        cases = [
+            {"model": "gpt-6-luna", "reasoning_effort": "none", "reasoning": {"effort": "high"}},
+            {"model": "gpt-6-astra", "extra_body": {"temperature": 1.0}},
+            {"model": "gpt-6-astra", "extra_body": {"top_p": 0.5}},
+            {"model": "gpt-6-luna", "reasoning": {"effort": "high"}, "extra_body": {"temperature": 1.0}},
+            {"model": "gpt-6-luna", "extra_body": {"reasoning": {"effort": "invalid"}}},
+            {"model": "gpt-4.1", "reasoning": {"effort": "high"}},
+            {"model": "gpt-6-astra", "extra_body": {"reasoning": {"effort": "none"}}},
+        ]
+        requests: list[dict] = []
+        with _sdk_client(requests) as sdk:
+            client = RailClient.openai(client=sdk)
+            for method in ("create", "parse"):
+                for case in cases:
+                    with self.subTest(method=method, case=case):
+                        requests.clear()
+                        kwargs = copy.deepcopy(case)
+                        if method == "parse":
+                            kwargs["text_format"] = Answer
+                        with self.assertRaises(ValueError):
+                            getattr(client.responses, method)(input="hello", **kwargs)
+                        self.assertEqual(requests, [])
+
+    def test_create_rejects_conflicting_native_text_before_sending(self):
+        requests: list[dict] = []
+        with _sdk_client(requests) as sdk:
+            client = RailClient.openai(client=sdk)
+            cases = [
+                {"verbosity": "low", "text": {"verbosity": "high"}},
+                {"response_format": {"type": "json_object"}, "text": {"format": {"type": "text"}}},
+            ]
+            for case in cases:
+                with self.subTest(case=case):
+                    with self.assertRaises(ValueError):
+                        client.responses.create(model="gpt-6-luna", input="hello", **case)
+                    self.assertEqual(requests, [])
+
+    def test_native_text_extends_convenience_settings_without_mutating_inputs(self):
+        requests: list[dict] = []
+        text = {"format": {"type": "json_object"}}
+        with _sdk_client(requests) as sdk:
+            client = RailClient.openai(client=sdk)
+            client.responses.create(model="gpt-6-luna", input="hello", verbosity="low", text=text)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["text"], {"verbosity": "low", "format": {"type": "json_object"}})
+        self.assertEqual(text, {"format": {"type": "json_object"}})
+
+    def test_native_reasoning_and_extra_body_sampling_preserve_valid_settings(self):
+        cases = [
+            {"reasoning": {"effort": "none"}, "temperature": 0.5},
+            {"extra_body": {"reasoning": {"effort": "none"}, "temperature": 0.5}},
+            {"reasoning_effort": "none", "reasoning": {"effort": "none", "summary": "auto"},
+             "extra_body": {"temperature": 0.5}},
+        ]
+        requests: list[dict] = []
+        with _sdk_client(requests) as sdk:
+            client = RailClient.openai(client=sdk)
+            for method in ("create", "parse"):
+                for case in cases:
+                    with self.subTest(method=method, case=case):
+                        kwargs = copy.deepcopy(case)
+                        if method == "parse":
+                            kwargs["text_format"] = Answer
+                        original = copy.deepcopy(kwargs)
+                        getattr(client.responses, method)(model="gpt-6-luna", input="hello", **kwargs)
+                        self.assertEqual(kwargs, original)
+                        self.assertEqual(requests[-1]["reasoning"]["effort"], "none")
+                        self.assertEqual(requests[-1]["temperature"], 0.5)
+                        if "summary" in case.get("reasoning", {}):
+                            self.assertEqual(requests[-1]["reasoning"]["summary"], "auto")
+            self.assertEqual(len(requests), 6)
+
     def test_create_and_parse_preserve_standard_cache_settings_on_the_wire(self):
         cases = [
             {"model": "gpt-6.1-sol", "input": "One-off prompt", "instructions": "Top-level instructions"},
