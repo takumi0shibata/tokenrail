@@ -1,6 +1,6 @@
-"""Thin client and batch execution helpers for OpenAI Responses API workloads.
+"""Thin client and batch execution helpers for Responses and Decisions workloads.
 
-tokenrail wraps the OpenAI Responses API with a ``client.responses``-style surface
+tokenrail wraps OpenAI Responses and Decisions with SDK-style namespaces
 and adds thread-based batch execution, structured output parsing, client-side
 RPM/TPM submit throttling, per-model token/cost monitoring, and resumable JSONL
 result writing.

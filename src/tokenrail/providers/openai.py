@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from typing import Any
 
+from .._requests import prepare_decision_request, request_api
 from ..catalog import calculate_cost, get_model_capabilities
 from ..types import JsonDict, NormalizedResponse, TimingBreakdown, UsageBreakdown
 from .base import BaseProvider
@@ -96,8 +98,8 @@ def _prepare_payload(payload: JsonDict, prompt_cache_options: JsonDict | None) -
             if field in payload and value != payload[field]:
                 raise ValueError(f"{field} conflicts with extra_body.{field}")
 
-    # Cache options are not yet named SDK arguments, and retention is absent
-    # from older supported SDK versions. Both can be forwarded in the body.
+    # Cache options are absent from some supported SDK signatures. Forward
+    # both cache controls through the body consistently across SDK versions.
     cache_body = {
         field: payload.pop(field)
         for field in ("prompt_cache_options", "prompt_cache_retention")
@@ -113,7 +115,7 @@ def _prepare_payload(payload: JsonDict, prompt_cache_options: JsonDict | None) -
 
 
 class OpenAIProvider(BaseProvider):
-    """Executes requests against the OpenAI Responses API.
+    """Executes requests against the OpenAI Responses and Decisions APIs.
 
     Validates request parameters against the model capability registry,
     normalizes the response (output text, usage, billing), and attaches a cost
@@ -313,6 +315,8 @@ class OpenAIProvider(BaseProvider):
             payload[field] = value
 
         payload = _prepare_payload(payload, prompt_cache_options)
+        if request_api(payload) == "decisions.create":
+            raise ValueError("questions requires decisions.create(); use client.decisions.create(...)")
         # Validate what the SDK will send, including fields supplied only in extra_body.
         body = {**payload, **(payload.get("extra_body") or {})}
         reasoning = body.get("reasoning")
@@ -344,12 +348,19 @@ class OpenAIProvider(BaseProvider):
         latency_seconds: float,
         output_parsed: Any | None = None,
         refusal: str | None = None,
+        api: str = "responses.create",
     ) -> NormalizedResponse:
         raw = _serialize_response(response)
         usage = UsageBreakdown.from_dict(raw.get("usage")).finalized()
         billing = raw.get("billing")
         actual_tier = str(raw.get("service_tier") or service_tier or "default")
-        cost = calculate_cost(model=model, usage=usage, payer=(billing or {}).get("payer"), service_tier=actual_tier)
+        payer = billing.get("payer") if isinstance(billing, dict) else None
+        cost = calculate_cost(model=model, usage=usage, payer=payer, service_tier=actual_tier, api=api)
+        if api == "decisions.create":
+            # Azure deployments and other custom endpoints have independent pricing.
+            endpoint = str(getattr(self._client, "base_url", "https://api.openai.com/v1/")).rstrip("/")
+            if endpoint != "https://api.openai.com/v1":
+                cost = None
         status = raw.get("status")
         error = None
         if raw.get("error") is not None:
@@ -375,7 +386,56 @@ class OpenAIProvider(BaseProvider):
             metadata=metadata,
             status=status,
             error=error,
+            api=api,
+            answers=raw.get("answers") if api == "decisions.create" else None,
         )
+
+    def create_decision(
+        self,
+        *,
+        model: str,
+        input: Any,
+        questions: Iterable[JsonDict],
+        request_id: str | None = None,
+        metadata: JsonDict | None = None,
+        prompt_cache_key: str | None = None,
+        prompt_cache_options: JsonDict | None = None,
+        **extra: Any,
+    ) -> NormalizedResponse:
+        """Evaluate questions, preserving typed answers and request-level usage.
+
+        ``metadata`` is local result metadata; it is not sent to Decisions.
+        Cache controls use extra_body to support the minimum SDK version.
+        """
+        payload = prepare_decision_request({"model": model, "input": input, "questions": questions, **extra})
+        if prompt_cache_key is not None:
+            payload["prompt_cache_key"] = prompt_cache_key
+        payload = _prepare_payload(payload, prompt_cache_options)
+        if "prompt_cache_key" in payload:
+            payload["extra_body"] = {
+                **(payload.get("extra_body") or {}), "prompt_cache_key": payload.pop("prompt_cache_key")
+            }
+
+        started_at = time.time()
+        started_monotonic = time.monotonic()
+        response = self._client.decisions.create(**payload)
+        normalized = self._normalize_response(
+            response=response,
+            model=model,
+            request_id=request_id,
+            service_tier=None,
+            metadata=metadata,
+            started_at=started_at,
+            completed_at=time.time(),
+            latency_seconds=time.monotonic() - started_monotonic,
+            api="decisions.create",
+        )
+        if normalized.error is None:
+            if not isinstance(normalized.answers, list) or len(normalized.answers) != len(payload["questions"]):
+                normalized.error = "Decision response must contain one answer per question"
+            else:
+                normalized.status = "completed"
+        return normalized
 
     def create(
         self,
@@ -494,6 +554,7 @@ class OpenAIProvider(BaseProvider):
                     started_at=started_at,
                     completed_at=time.time(),
                     latency_seconds=time.monotonic() - started_monotonic,
+                    api="responses.parse",
                 )
                 parse_error = f"Structured output parsing failed ({type(exc).__name__}): {exc}"
                 normalized.error = f"{normalized.error}; {parse_error}" if normalized.error else parse_error
@@ -510,4 +571,5 @@ class OpenAIProvider(BaseProvider):
             latency_seconds=time.monotonic() - started_monotonic,
             output_parsed=_extract_output_parsed(response, raw),
             refusal=_extract_refusal(response, raw),
+            api="responses.parse",
         )

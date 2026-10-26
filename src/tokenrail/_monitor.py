@@ -183,6 +183,7 @@ class _RollingMetricsMonitor:
             developer_requests=self._snapshot.developer_requests,
             unknown_payer_requests=self._snapshot.unknown_payer_requests,
             by_model={model: ModelStats(**stats.to_dict()) for model, stats in self._snapshot.by_model.items()},
+            unpriced_requests=self._snapshot.unpriced_requests,
         )
 
     def _raw_payer(self, response: NormalizedResponse) -> str | None:
@@ -237,6 +238,9 @@ class _RollingMetricsMonitor:
                 model_stats.nominal_usd += response.cost.nominal_usd
                 model_stats.developer_usd += response.cost.developer_usd
                 model_stats.openai_usd += response.cost.openai_usd
+            else:
+                self._snapshot.unpriced_requests += 1
+                model_stats.unpriced_requests += 1
 
             observed_payer = self._observed_payer(response)
             if observed_payer == "openai":
@@ -346,7 +350,7 @@ class _RollingMetricsMonitor:
         sequence_width = max(4, len(str(max(snapshot.todo_requests, snapshot.processed_requests))))
         sequence = f"{snapshot.processed_requests:0{sequence_width}d}"
         status = "ok" if response.error is None else "ERR"
-        prefix = f"  {sequence}  {status:<3}  {response.id:<12}"
+        prefix = f"  {sequence}  {status:<3}  {response.id:<12}  api={response.api}"
         if show_model:
             prefix += f"  model={response.model}"
         if response.error is not None:
@@ -400,12 +404,18 @@ class _RollingMetricsMonitor:
             read_pct = round(snapshot.cached_tokens / snapshot.input_tokens * 100)
             write_pct = round(snapshot.cache_write_tokens / snapshot.input_tokens * 100)
             cache_text = f" · cache r{read_pct}%/w{write_pct}%"
+        price_note = f" · {snapshot.unpriced_requests} unpriced" if snapshot.unpriced_requests else ""
+        cost_text = _format_usd(snapshot.nominal_usd, digits=3)
+        if snapshot.unpriced_requests == snapshot.processed_requests and snapshot.unpriced_requests:
+            cost_text = "$—"
+        elif snapshot.unpriced_requests:
+            cost_text = f"known subtotal {cost_text}"
         return (
             f"── {snapshot.processed_requests}/{snapshot.todo_requests} · {pct}% · "
             f"{self._format_duration(snapshot.elapsed_seconds)} · ETA {eta} · "
             f"{snapshot.rolling_rpm:.0f} rpm · {_format_tokens(round(snapshot.rolling_tpm))} tpm · "
-            f"{_format_usd(snapshot.nominal_usd, digits=3)} "
-            f"(oai {openai_pct} / dev {_format_usd(snapshot.developer_usd, digits=3)}){cache_text}"
+            f"{cost_text} "
+            f"(oai {openai_pct} / dev {_format_usd(snapshot.developer_usd, digits=3)}){price_note}{cache_text}"
         )
 
     def format_final(self, snapshot: StatsSnapshot) -> list[str]:
@@ -419,11 +429,16 @@ class _RollingMetricsMonitor:
             developer_pct = f"{round(snapshot.developer_usd / snapshot.nominal_usd * 100)}%"
         else:
             openai_pct = developer_pct = "—"
-        lines.append(
-            f"Total {_format_usd(snapshot.nominal_usd, digits=3)} — "
-            f"openai {_format_usd(snapshot.openai_usd, digits=3)} ({openai_pct}) / "
-            f"developer {_format_usd(snapshot.developer_usd, digits=3)} ({developer_pct})"
-        )
+        if snapshot.unpriced_requests == snapshot.processed_requests and snapshot.unpriced_requests:
+            lines.append(f"Total $— · {snapshot.unpriced_requests} unpriced")
+        else:
+            label = "Known subtotal" if snapshot.unpriced_requests else "Total"
+            price_note = f" · {snapshot.unpriced_requests} unpriced" if snapshot.unpriced_requests else ""
+            lines.append(
+                f"{label} {_format_usd(snapshot.nominal_usd, digits=3)} — "
+                f"openai {_format_usd(snapshot.openai_usd, digits=3)} ({openai_pct}) / "
+                f"developer {_format_usd(snapshot.developer_usd, digits=3)} ({developer_pct}){price_note}"
+            )
         if snapshot.cached_tokens or snapshot.cache_write_tokens:
             lines.append(
                 "Prompt cache: "
@@ -434,9 +449,13 @@ class _RollingMetricsMonitor:
             lines.append(f"Payer switches: {snapshot.payer_switches}")
         if len(snapshot.by_model) >= 2:
             for model, stats in sorted(snapshot.by_model.items()):
+                cost_text = _format_usd(stats.nominal_usd, digits=3)
+                if stats.unpriced_requests == stats.requests:
+                    cost_text = "$—"
+                price_note = f" · {stats.unpriced_requests} unpriced" if stats.unpriced_requests else ""
                 lines.append(
                     f"  {model:<20} {stats.requests} req · {_format_tokens(stats.total_tokens)} tok · "
-                    f"{_format_usd(stats.nominal_usd, digits=3)}"
+                    f"{cost_text}{price_note}"
                 )
         return lines
 

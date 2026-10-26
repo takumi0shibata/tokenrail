@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ._monitor import _RollingMetricsMonitor
+from ._requests import prepare_decision_request, request_api
 from ._storage import _JsonlWriter
 from .types import BatchItem, JsonDict, NormalizedResponse, StatsSnapshot, TimingBreakdown, UsageBreakdown
 
@@ -18,13 +19,15 @@ def batch_items_from_queries(queries: dict[str, Any], **shared_request_kwargs: A
     Each value becomes the request ``input``; ``shared_request_kwargs`` (e.g.
     ``model``, ``reasoning_effort``) are applied to every item.
     """
+    if request_api(shared_request_kwargs) == "decisions.create":
+        shared_request_kwargs = prepare_decision_request(shared_request_kwargs)
     return [
         BatchItem(id=str(item_id), request_kwargs={"input": messages, **shared_request_kwargs})
         for item_id, messages in queries.items()
     ]
 
 
-def _error_response(item_id: str, model: str, provider: str, error: Exception) -> NormalizedResponse:
+def _error_response(item_id: str, model: str, provider: str, error: Exception, api: str) -> NormalizedResponse:
     return NormalizedResponse(
         id=item_id,
         model=model,
@@ -36,6 +39,7 @@ def _error_response(item_id: str, model: str, provider: str, error: Exception) -
         cost=None,
         timing=TimingBreakdown(started_at=0.0, completed_at=0.0, latency_seconds=0.0),
         error=f"{type(error).__name__}: {error}",
+        api=api,
     )
 
 
@@ -139,7 +143,7 @@ class BatchExecutor:
 
     By default, each JSONL line contains the full normalized response including
     the original API body under ``raw_response``. A ``projector`` can select
-    fields, but authoritative ``id``, ``error`` and ``status`` are always saved.
+    fields, but authoritative ``id``, ``error``, ``status`` and ``api`` are always saved.
     Successful ids in the file are skipped on subsequent runs; reuse a path
     and ids only for identical inputs and request settings. Records are appended
     in completion order, not input order. Request failures are saved as error
@@ -183,13 +187,19 @@ class BatchExecutor:
 
     def _call_single(self, item: BatchItem) -> NormalizedResponse:
         request_kwargs = self._request_kwargs(item)
+        api = request_api(request_kwargs)
         try:
-            if request_kwargs.get("text_format") is not None:
-                return self.client.responses.parse(**request_kwargs)
-            return self.client.responses.create(**request_kwargs)
+            if api == "decisions.create":
+                response = self.client.decisions.create(**request_kwargs)
+            elif api == "responses.parse":
+                response = self.client.responses.parse(**request_kwargs)
+            else:
+                response = self.client.responses.create(**request_kwargs)
+            response.api = api
+            return response
         except Exception as exc:
             model = str(request_kwargs.get("model") or getattr(self.client.provider, "model_id", "unknown"))
-            return _error_response(item.id, model=model, provider=self.client.provider.name, error=exc)
+            return _error_response(item.id, model=model, provider=self.client.provider.name, error=exc, api=api)
 
     def _run_threaded(self, items: list[BatchItem]) -> None:
         limiter = _SubmitRateLimiter(
@@ -236,6 +246,8 @@ class BatchExecutor:
         normalized_items = self._prepare_items(items)
         seen_ids: set[str] = set()
         for item in normalized_items:
+            if request_api(item.request_kwargs) == "decisions.create":
+                item.request_kwargs = prepare_decision_request(item.request_kwargs)
             if not item.id:
                 raise ValueError("BatchItem.id must not be empty")
             if item.id in seen_ids:

@@ -5,11 +5,12 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://pypi.org/project/tokenrail/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-`tokenrail` is a small Python library for running OpenAI Responses API jobs with a `client.responses`-style surface.
+`tokenrail` is a small Python library for running OpenAI Responses and Decisions
+API jobs with SDK-style `client.responses` and `client.decisions` namespaces.
 
 It focuses on:
 
-- thread-based OpenAI batch execution
+- thread-based OpenAI and Azure OpenAI batch execution
 - structured output parsing for Pydantic models
 - client-side RPM / TPM submit throttling
 - OpenAI prompt-cache settings passed through unchanged, with read/write usage tracking
@@ -17,10 +18,10 @@ It focuses on:
 - resumable JSONL result writing with the full API response
 
 The package includes type annotations and PEP 561 metadata. It requires Python
-3.10+ and the OpenAI Python SDK (installed automatically). You need an OpenAI
+3.10+ and OpenAI Python SDK 3.26.0 or later (installed automatically). You need an OpenAI
 API key and access to the model you request. API calls can incur charges.
 
-Batches run locally in threads using the Responses API; this is not a wrapper
+Batches run locally in threads using the Responses or Decisions API; this is not a wrapper
 for OpenAI’s hosted Batch API.
 
 The library is in beta. The public API is still evolving, and breaking changes
@@ -99,7 +100,102 @@ print(stats.to_dict())
 Choose concurrency and rate limits for your account. Run the same batch again
 with the same output path to skip saved successes and retry failed or unfinished
 jobs. Use a new path when changing inputs or settings; see [Resume behavior](#resume-behavior).
-The following batch snippets reuse `client` and `items` from this example.
+The result-saving examples below reuse `client` and `items` from this example.
+
+## Run Decisions jobs
+
+Include `questions` to run a batch through the Decisions API. No API selector is
+needed: each item's request determines its operation. `questions` selects
+`decisions.create`; otherwise a non-null `text_format` selects `responses.parse`,
+and other items use `responses.create`.
+
+```python
+from tokenrail import BatchExecutor, RailClient, batch_items_from_queries
+
+client = RailClient.openai(timeout=60, max_retries=2)
+decision_items = batch_items_from_queries(
+    {
+        "ticket-1": "I was charged twice. Please refund the extra charge.",
+        "ticket-2": "Where is my order?",
+    },
+    model="gpt-6-luna",
+    questions=[{
+        "type": "predicate",
+        "name": "refund_requested",
+        "instructions": "Does the customer request a refund?",
+    }],
+)
+stats = BatchExecutor(
+    client=client,
+    output_path="out/decisions.jsonl",
+    max_workers=10,
+    max_rpm=60,
+).run(decision_items)
+```
+
+For a single request, call `client.decisions.create(model=..., input=...,
+questions=...)`. It returns a `NormalizedResponse` with `answers`, a list of
+dictionaries in question order. The answer types are `predicate`, `choice`,
+`score`, and `refusal`; inspect each answer's `type` before using its fields.
+An individual question's refusal is saved as an answer and does not cause an
+automatic retry of the request. `output_text` and `output_parsed` are unused
+for Decisions; the original response is preserved in `raw_response`.
+
+Text, image and JSON content, question definitions, and prompt-cache settings
+are forwarded as supplied. `prompt_cache_key` and `prompt_cache_options` work
+across supported SDK versions. `request_id` identifies the local job and
+`metadata` is saved locally for Decisions; neither is sent to that API.
+See [Decisions](https://developers.openai.com/api/docs/guides/decisions) for
+accepted inputs, supported models and question types.
+
+To mix Decisions, parsed output, and ordinary Responses in one batch, build
+individual `BatchItem` objects with their own `request_kwargs`. A supplied
+`questions` value must contain 1–400 question dictionaries; `None`, an empty
+collection, or a combination with `text_format` raises `ValueError` before any
+request in the batch is sent. `questions` supplied in `extra_body` also selects
+Decisions. Direct calls through `client.responses` reject `questions`; use
+`client.decisions.create` explicitly for single requests.
+
+Concurrency and RPM/TPM submit limits are shared across all items in a mixed
+batch. Each request log and saved record includes its operation as `api`, such
+as `decisions.create` or `responses.parse`. Resume still uses job IDs, so use a
+new output path when changing the API, questions, inputs or other settings.
+
+### Azure OpenAI
+
+Use Azure's v1 endpoint with the OpenAI SDK. `model` is your deployment name.
+The same configuration supports Decisions and Responses jobs.
+
+```python
+import os
+from openai import OpenAI
+from tokenrail import RailClient
+
+with OpenAI(
+    base_url="https://YOUR-RESOURCE-NAME.openai.azure.com/openai/v1/",
+    api_key=os.environ["AZURE_OPENAI_API_KEY"],
+    timeout=60,
+    max_retries=2,
+) as sdk:
+    azure = RailClient.openai(client=sdk)
+    result = azure.decisions.create(
+        model="YOUR-GPT-6-LUNA-DEPLOYMENT",
+        input="Please refund the duplicate charge.",
+        questions=[{
+            "type": "predicate",
+            "name": "refund_requested",
+            "instructions": "Does the customer request a refund?",
+        }],
+    )
+    print(result.answers)
+```
+
+For Microsoft Entra ID authentication, configure the SDK client with your
+token provider before injecting it. Confirm that your deployment and region
+support Decisions; see the
+[Azure guide](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/decisions).
+Decisions usage is tracked on Azure and other custom endpoints, but `cost` is
+`None`: tokenrail does not assume OpenAI prices apply to them.
 
 ## Result saving
 
@@ -108,7 +204,7 @@ if needed. Each completed request is appended as one JSONL record, in
 completion order rather than input order.
 
 By default, records contain the full normalized response: output text, parsed
-output, refusal, usage, billing, estimated cost, timing, metadata, status, and
+output, refusal, Decisions answers, API operation, usage, billing, estimated cost, timing, metadata, status, and
 error. The original API response body is preserved under `raw_response` when
 available. The top-level `id` is your query id; the API's response id is kept
 under `raw_response.id`.
@@ -129,7 +225,7 @@ stats = executor.run(items)
 
 The projector receives a `NormalizedResponse` and must return a dictionary
 with JSON-serializable values. tokenrail always adds or overrides `id`, `error`,
-and `status` with the actual result, so field selection cannot break resume or
+`status`, and `api` with the actual result, so field selection cannot break resume or
 hide failures. A projector replaces the default record; unselected fields,
 including `raw_response`, are omitted.
 
@@ -204,6 +300,7 @@ arguments and `extra_body` raise `ValueError` before sending.
 | `RailClient.openai(...)` | Construct a client or wrap an existing OpenAI SDK client with `client=...` |
 | `client.responses.create(...)` | Return a normalized text or JSON response |
 | `client.responses.parse(..., text_format=...)` | Return validated Pydantic output |
+| `client.decisions.create(..., questions=...)` | Return typed Decisions answers, usage and cost estimate |
 | `batch_items_from_queries(queries, **kwargs)` | Apply shared request settings to an ID-to-input mapping |
 | `BatchItem(id, request_kwargs)` | Supply different request settings for individual jobs |
 | `BatchExecutor(client=..., output_path=..., ...)` | Run and persist jobs; `run(items)` returns `StatsSnapshot` |
@@ -263,10 +360,10 @@ details short, and prints batch metrics separately:
 ```text
 tokenrail · 100 requests
    PAYER: openai — costs are covered
-  0001  ok   req-0001      model=gpt-5.6-terra  1.3k tok (40% cached / 0% cache-write)  $0.002000  oai  1.4s
+  0001  ok   req-0001      api=responses.create  model=gpt-5.6-terra  1.3k tok (40% cached / 0% cache-write)  $0.002000  oai  1.4s
 ── 50/100 · 50% · 00:00:14 · ETA 00:00:14 · 58 rpm · 74k tpm · $0.100 (oai 100% / dev $0.000) · cache r40%/w2%
 !! PAYER SWITCH: openai → developer at 53/100 (00:00:15) — now billed to you
-  0053  ok   req-0053      1.2k tok (38% cached / 0% cache-write)  $0.001900  DEV  1.1s
+  0053  ok   req-0053      api=responses.create  1.2k tok (38% cached / 0% cache-write)  $0.001900  DEV  1.1s
 Done 100/100 · 99 ok / 1 errors · 00:00:29
 Total $0.198 — openai $0.104 (53%) / developer $0.094 (47%)
 Prompt cache: 48k read / 2.4k written
@@ -308,6 +405,16 @@ Models without a pricing entry return `cost=None`. Unregistered model names
 that partially match known entries can use fallback capabilities or prices and
 emit `ModelCatalogFallbackWarning`. Check the warning before relying on the
 estimate or supported parameters.
+
+Prices are selected per API operation. Decisions has separate rates, including
+zero output-token cost and distinct cache-read/write accounting. Its price
+estimate is available for registered models on `https://api.openai.com/v1/`;
+custom endpoints and Azure deployments return `cost=None`. Usage is always
+recorded when supplied by the API. `stats.unpriced_requests` counts results
+without a cost estimate. Progress summaries label partial cost totals as a
+known subtotal and show `$—` when every result is unpriced. Numeric cost totals
+in statistics contain only known estimates, not an estimate for the missing
+requests.
 
 The capability catalog validates options such as `reasoning_effort`,
 `temperature` and `top_p` before sending. Support is model-specific; for example,

@@ -73,7 +73,9 @@ def test_default_output_preserves_full_response_and_resumes(tmp_path, as_string)
     assert len(path.read_text().splitlines()) == 1
 
 
-@pytest.mark.parametrize("projected", [{}, {"id": "wrong", "error": "invented", "status": "failed"}])
+@pytest.mark.parametrize("projected", [
+    {}, {"id": "wrong", "error": "invented", "status": "failed", "api": "decisions.create"}
+])
 def test_projector_selects_fields_with_authoritative_metadata(tmp_path, projected):
     path = tmp_path / "results.jsonl"
     api = FakeAPI()
@@ -85,7 +87,7 @@ def test_projector_selects_fields_with_authoritative_metadata(tmp_path, projecte
     )
     executor.run(batch())
     assert json.loads(path.read_text()) == {
-        "text": "日本語の結果", "id": "query-1", "error": None, "status": "completed"
+        "text": "日本語の結果", "id": "query-1", "error": None, "status": "completed", "api": "responses.create"
     }
     assert executor.run(batch()).skipped_requests == 1
     assert len(api.calls) == 1

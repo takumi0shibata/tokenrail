@@ -9,7 +9,7 @@ from ..types import NormalizedResponse
 class BaseProvider(ABC):
     """Interface for backends that execute a single request.
 
-    Implementations accept Responses-API-style keyword arguments and return a
+    Implementations accept SDK-style keyword arguments and return a
     :class:`~tokenrail.types.NormalizedResponse`.
     """
 
@@ -21,3 +21,6 @@ class BaseProvider(ABC):
 
     def parse(self, **kwargs: Any) -> NormalizedResponse:
         raise NotImplementedError(f"{self.name} does not support structured output parsing")
+
+    def create_decision(self, **kwargs: Any) -> NormalizedResponse:
+        raise NotImplementedError(f"{self.name} does not support decisions")

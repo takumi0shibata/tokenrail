@@ -38,7 +38,7 @@ jobs:
       - name: Test minimum supported OpenAI SDK
         run: >-
           uv run --isolated --no-project --python 3.10
-          --with . --with 'openai==1.108.0' --with pytest --with python-dotenv
+          --with-editable . --with 'openai==3.26.0' --with httpx --with pytest --with python-dotenv
           pytest -q
 
   sdk3:
@@ -51,7 +51,7 @@ jobs:
       - name: Test OpenAI SDK 3 transport compatibility
         run: >-
           uv run --isolated --no-project --python 3.12
-          --with . --with 'openai==3.36.1' --with httpx --with pytest --with python-dotenv
+          --with-editable . --with 'openai==3.36.1' --with httpx --with pytest --with python-dotenv
           pytest -q
 
   build:

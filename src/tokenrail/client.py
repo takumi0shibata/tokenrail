@@ -18,17 +18,26 @@ class _ResponsesNamespace:
         return self._provider.parse(**kwargs)
 
 
+class _DecisionsNamespace:
+    def __init__(self, provider: BaseProvider) -> None:
+        self._provider = provider
+
+    def create(self, **kwargs: Any) -> NormalizedResponse:
+        return self._provider.create_decision(**kwargs)
+
+
 class RailClient:
-    """Provider-agnostic client with a ``client.responses.create(...)`` surface.
+    """Provider-agnostic client with SDK-style responses and decisions namespaces.
 
     Wraps a :class:`~tokenrail.providers.base.BaseProvider` and exposes it through
-    a ``responses`` namespace that mirrors the OpenAI SDK call shape while
+    namespaces that mirror the OpenAI SDK call shape while
     returning :class:`~tokenrail.types.NormalizedResponse` objects.
     """
 
     def __init__(self, provider: BaseProvider) -> None:
         self.provider = provider
         self.responses = _ResponsesNamespace(provider)
+        self.decisions = _DecisionsNamespace(provider)
 
     @classmethod
     def openai(

@@ -10,6 +10,23 @@ designation was premature and does not describe the project's current status.
 
 ## [Unreleased]
 
+### Added
+
+- Add `client.decisions.create()` and select Decisions automatically for batch
+  items containing `questions`. Mixed batches reuse existing concurrency,
+  rate limits, progress tracking and resumable JSONL storage.
+- Preserve ordered Decisions answers, including per-question refusals, and
+  record the SDK operation in every result and request progress line.
+- Estimate Decisions costs with endpoint-specific input/cache prices and no
+  output-token charge. Leave costs unknown for Azure and other custom endpoints,
+  and identify unpriced results in batch statistics and progress totals.
+- Document Azure v1 endpoint configuration and SDK client injection.
+
+### Changed
+
+- Require OpenAI Python SDK 3.26.0 or later; test that minimum in CI.
+- Always retain the authoritative `api` field when projecting saved results.
+
 ## [0.5.4] - Unreleased
 
 ### Fixed
