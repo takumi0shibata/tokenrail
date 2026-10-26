@@ -6,12 +6,14 @@ RPM/TPM submit throttling, per-model token/cost monitoring, and resumable JSONL
 result writing.
 """
 
+from importlib.metadata import version as _distribution_version
+
 from .client import RailClient
 from .executor import BatchExecutor, batch_items_from_queries
 from .providers import OpenAIProvider
 from .types import BatchItem, CostBreakdown, NormalizedResponse, StatsSnapshot, UsageBreakdown
 
-__version__ = "0.5.4"
+__version__ = _distribution_version("tokenrail")
 
 __all__ = [
     "__version__",

@@ -4,14 +4,23 @@ on:
   push:
     tags: ["v*"]
 
+concurrency:
+  group: pypi-release
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v5
-      - name: Check tag matches package version
+        with:
+          python-version: "3.12"
+      - name: Check release commit and version
         run: |
+          git merge-base --is-ancestor HEAD origin/main
           PKG_VERSION=$(grep -m1 '^version' pyproject.toml | cut -d'"' -f2)
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
@@ -19,9 +28,32 @@ jobs:
             exit 1
           fi
       - name: Run tests
-        run: uv run pytest -q
+        run: uv run --locked pytest -q
       - name: Build sdist and wheel
         run: uv build
+      - name: Validate distribution metadata
+        run: uvx twine check dist/*
+      - name: Test installed wheel outside the checkout
+        run: |
+          WHEEL=$(realpath dist/*.whl)
+          SMOKE_TESTS="$PWD/tests/test_decisions.py"
+          VERIFY_DIR=$(mktemp -d)
+          export EXPECTED_VERSION="${GITHUB_REF_NAME#v}"
+          uv venv --python 3.12 "$VERIFY_DIR/.venv"
+          uv pip install --python "$VERIFY_DIR/.venv/bin/python" "$WHEEL" httpx pytest
+          cd "$VERIFY_DIR"
+          "$VERIFY_DIR/.venv/bin/python" -I - <<'PY'
+          import importlib.metadata
+          import os
+          from pathlib import Path
+          import tokenrail
+
+          assert importlib.metadata.version("tokenrail") == os.environ["EXPECTED_VERSION"]
+          assert tokenrail.__version__ == os.environ["EXPECTED_VERSION"]
+          assert not Path(tokenrail.__file__).resolve().is_relative_to(Path(os.environ["GITHUB_WORKSPACE"]).resolve())
+          assert Path(tokenrail.__file__).with_name("py.typed").is_file()
+          PY
+          "$VERIFY_DIR/.venv/bin/python" -I -m pytest --import-mode=importlib -q "$SMOKE_TESTS"
       - uses: actions/upload-artifact@v4
         with:
           name: dist

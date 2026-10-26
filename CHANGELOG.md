@@ -10,6 +10,8 @@ designation was premature and does not describe the project's current status.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-26
+
 ### Added
 
 - Add `client.decisions.create()` and select Decisions automatically for batch
@@ -26,8 +28,22 @@ designation was premature and does not describe the project's current status.
 
 - Require OpenAI Python SDK 3.26.0 or later; test that minimum in CI.
 - Always retain the authoritative `api` field when projecting saved results.
+- Read `tokenrail.__version__` from distribution metadata so `pyproject.toml`
+  remains the single source of the package version.
+- Expand the README with self-contained installation, batch, resume, pricing,
+  and SDK client configuration guidance.
+- Validate distribution metadata and run Decisions tests against the installed
+  wheel outside the source checkout before publishing to PyPI.
 
-## [0.5.4] - Unreleased
+### Fixed
+
+- Validate the final Responses request, including native SDK arguments and
+  `extra_body`, before sending. Reject conflicting convenience arguments.
+- Use a monotonic clock for batch elapsed time, ETA, rolling metrics, and
+  periodic summaries so wall-clock adjustments cannot distort progress.
+- Keep live-test safety-stop assertions compatible with OpenAI SDK 3.
+
+## [0.5.4] - 2026-10-22
 
 ### Fixed
 
