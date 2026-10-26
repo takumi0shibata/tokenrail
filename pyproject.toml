@@ -1,7 +1,7 @@
 [project]
 name = "tokenrail"
 version = "0.5.4"
-description = "Thin client and batch execution helpers for OpenAI Responses API workloads."
+description = "Thin client and batch execution helpers for OpenAI Responses and Decisions API workloads."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -33,7 +33,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "openai>=1.108.0",
+    "openai>=3.26.0",
 ]
 
 [project.urls]

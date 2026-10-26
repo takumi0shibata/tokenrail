@@ -14,7 +14,7 @@ class Answer(BaseModel):
     answer: str
 
 
-@pytest.mark.parametrize("route", ["create", "parse", "parse_error", "batch"])
+@pytest.mark.parametrize("route", ["create", "parse", "parse_error", "batch", "decisions"])
 @pytest.mark.parametrize("adjustment", [0, -60, 60])
 def test_response_latency_uses_elapsed_time(monkeypatch, tmp_path, route, adjustment):
     clock = {"elapsed": 0.0, "offset": 0.0}
@@ -32,6 +32,12 @@ def test_response_latency_uses_elapsed_time(monkeypatch, tmp_path, route, adjust
         calls.append(request.url.path)
         clock["elapsed"] = 2.0
         clock["offset"] = adjustment
+        if route == "decisions":
+            return httpx.Response(200, json={
+                "model": "gpt-6-luna",
+                "answers": [{"type": "predicate", "name": "ok", "probability": 0.9}],
+                "usage": {"input_tokens": 10, "output_tokens": 0, "total_tokens": 10},
+            })
         text = '{"answer":' if route == "parse_error" else '{"answer":"OK"}'
         return httpx.Response(
             200,
@@ -66,12 +72,20 @@ def test_response_latency_uses_elapsed_time(monkeypatch, tmp_path, route, adjust
             assert batch.run([BatchItem("job", kwargs)]).success_requests == 1
             result = json.loads(path.read_text())
         else:
-            if route in ("parse", "parse_error"):
+            if route == "decisions":
+                response = client.decisions.create(
+                    **kwargs, questions=[{"type": "predicate", "name": "ok", "instructions": "Is it OK?"}]
+                )
+            elif route in ("parse", "parse_error"):
                 response = client.responses.parse(**kwargs, text_format=Answer)
             else:
                 response = client.responses.create(**kwargs)
             result = response.to_dict()
     assert len(calls) == 1
+    expected_api = "responses.parse" if route in ("parse", "parse_error") else "responses.create"
+    if route == "decisions":
+        expected_api = "decisions.create"
+    assert result["api"] == expected_api
     assert result["usage"]["total_tokens"] == 10
     if route == "parse_error":
         assert result["error"] and "ValidationError" in result["error"]

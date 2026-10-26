@@ -36,7 +36,13 @@ class _JsonlWriter:
     def save(self, response: NormalizedResponse) -> None:
         # Completion metadata is authoritative even when a custom projector
         # omits it or accidentally labels an unsuccessful result as complete.
-        record = {**self.projector(response), "id": response.id, "error": response.error, "status": response.status}
+        record = {
+            **self.projector(response),
+            "id": response.id,
+            "error": response.error,
+            "status": response.status,
+            "api": response.api,
+        }
         serialized = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
         with self._lock:
             with self.path.open("a+b") as handle:

@@ -194,6 +194,13 @@ _PRICING_RULES: list[tuple[tuple[str, ...], ModelPricing]] = [
 ]
 
 
+# Decisions endpoint rates, verified on 2026-10-26:
+# https://developers.openai.com/api/docs/guides/decisions#pricing-and-availability
+_DECISIONS_PRICING = ModelPricing(
+    Decimal("0.10"), Decimal("0.01"), Decimal("0"), cache_write_input_per_million=Decimal("0.125")
+)
+
+
 _MODEL_NAME_DELIMITERS = {"-", "_", "/", ":", " ", "."}
 _OFFICIAL_SNAPSHOT_SUFFIX = re.compile(r"-\d{4}-\d{2}-\d{2}")
 _WARNED_FALLBACK_MODELS: set[str] = set()
@@ -279,13 +286,24 @@ def get_model_capabilities(model: str) -> ModelCapabilities:
     return capability_match[1] if capability_match is not None else _DEFAULT_CAPABILITIES
 
 
-def get_model_pricing(model: str, service_tier: str = "default") -> ModelPricing | None:
+def get_model_pricing(
+    model: str, service_tier: str = "default", *, api: str = "responses.create"
+) -> ModelPricing | None:
     """Return per-million-token pricing for ``model``, or ``None`` if unknown.
 
     The checked-in registry only carries default-tier base prices; long-context
     premiums and regional uplifts are not applied. For other service tiers the
     default-tier price is returned as an approximation.
     """
+    if api == "decisions.create":
+        # Deployment aliases and unsupported models must not inherit Responses prices.
+        if model == "gpt-6-luna" or (
+            model.startswith("gpt-6-luna") and _OFFICIAL_SNAPSHOT_SUFFIX.fullmatch(model[len("gpt-6-luna") :])
+        ):
+            return _DECISIONS_PRICING
+        return None
+    if api not in {"responses.create", "responses.parse"}:
+        return None
     _, pricing_match = _resolve_model_catalog(model)
     return pricing_match[1] if pricing_match is not None else None
 
@@ -295,13 +313,15 @@ def calculate_cost(
     usage: UsageBreakdown,
     payer: str | None,
     service_tier: str = "default",
+    *,
+    api: str = "responses.create",
 ) -> CostBreakdown | None:
     """Compute the nominal USD cost of ``usage`` and attribute it to a payer.
 
     Returns ``None`` when the model has no pricing entry. When ``payer`` is
     ``"openai"`` the cost is attributed to OpenAI instead of the developer.
     """
-    pricing = get_model_pricing(model, service_tier=service_tier)
+    pricing = get_model_pricing(model, service_tier=service_tier, api=api)
     if pricing is None:
         return None
 
