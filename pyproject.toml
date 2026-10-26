@@ -1,6 +1,6 @@
 [project]
 name = "tokenrail"
-version = "0.5.4"
+version = "0.6.0"
 description = "Thin client and batch execution helpers for OpenAI Responses and Decisions API workloads."
 readme = "README.md"
 license = "MIT"
