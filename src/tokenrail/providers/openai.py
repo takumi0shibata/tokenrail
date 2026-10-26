@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Iterable
 from typing import Any
@@ -81,6 +82,52 @@ def _serialize_response(response: Any) -> JsonDict:
     if hasattr(response, "to_dict"):
         return response.to_dict()
     raise TypeError(f"Unsupported response type: {type(response)!r}")
+
+
+def _valid_decision_answer(answer: Any, question: JsonDict) -> bool:
+    """Check the answer contract without discarding usage or the original response."""
+    if not isinstance(answer, dict) or answer.get("name") != question.get("name"):
+        return False
+    kind = answer.get("type")
+    if kind == "refusal":
+        return True
+    if kind != question.get("type"):
+        return False
+
+    def finite_number(value: Any) -> bool:
+        return type(value) in (int, float) and math.isfinite(value)
+
+    def probability(value: Any) -> bool:
+        return finite_number(value) and 0 <= value <= 1
+
+    if kind == "predicate":
+        return probability(answer.get("probability"))
+    if kind not in ("choice", "score") or not probability(answer.get("confidence")):
+        return False
+
+    def choice_value(value: Any) -> bool:
+        return type(value) in (str, bool)
+
+    if kind == "choice" and not choice_value(answer.get("choice")):
+        return False
+    if kind == "score" and not finite_number(answer.get("score")):
+        return False
+    probabilities = answer.get("probabilities")
+    if not isinstance(probabilities, list) or not probabilities:
+        return False
+    for item in probabilities:
+        if not isinstance(item, dict) or not probability(item.get("probability")):
+            return False
+        if kind == "choice":
+            if not choice_value(item.get("value")):
+                return False
+        else:
+            value = item.get("value")
+            if type(value) is not int or value < 0:
+                return False
+            if not isinstance(item.get("label"), str):
+                return False
+    return True
 
 
 def _prepare_payload(payload: JsonDict, prompt_cache_options: JsonDict | None) -> JsonDict:
@@ -434,7 +481,12 @@ class OpenAIProvider(BaseProvider):
             if not isinstance(normalized.answers, list) or len(normalized.answers) != len(payload["questions"]):
                 normalized.error = "Decision response must contain one answer per question"
             else:
-                normalized.status = "completed"
+                for index, (answer, question) in enumerate(zip(normalized.answers, payload["questions"], strict=True)):
+                    if not _valid_decision_answer(answer, question):
+                        normalized.error = f"Decision answer at index {index} is invalid or does not match its question"
+                        break
+                else:
+                    normalized.status = "completed"
         return normalized
 
     def create(

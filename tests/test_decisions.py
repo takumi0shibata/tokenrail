@@ -294,6 +294,110 @@ def test_question_refusals_are_saved_and_not_automatically_reissued(tmp_path):
         assert record["error"] is None
 
 
+@pytest.mark.parametrize("answer", [
+    None, {}, {"type": "unknown", "name": "refund"},
+    {"type": "predicate", "name": "refund"},
+    {"type": "predicate", "name": "refund", "probability": None},
+    {"type": "predicate", "name": "refund", "probability": 1.1},
+    {"type": "predicate", "name": "other", "probability": 0.9},
+    {"type": "refusal", "name": "other"},
+    {"type": "score", "name": "refund", "score": 0.7, "confidence": 0.9, "probabilities": []},
+])
+def test_malformed_decision_answers_preserve_evidence_and_remain_retryable(tmp_path, answer):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json=decision_body([answer]))
+
+    path = tmp_path / "out.jsonl"
+    items = batch_items_from_queries({"job": "test"}, model="gpt-6-luna", questions=QUESTIONS)
+    with sdk_client(handler) as sdk:
+        executor = BatchExecutor(client=RailClient.openai(client=sdk), output_path=path, progress=False)
+        for _ in range(2):
+            stats = executor.run(items)
+            assert stats.error_requests == 1 and stats.success_requests == 0
+            assert stats.skipped_requests == 0
+            assert stats.total_tokens == 1500
+    assert len(calls) == 2
+    for record in map(json.loads, path.read_text().splitlines()):
+        assert record["error"] and "answer" in record["error"].lower()
+        assert record["raw_response"]["answers"] == record["answers"]
+        assert record["usage"]["total_tokens"] == 1500
+        assert record["cost"]["nominal_usd"] > 0
+
+
+@pytest.mark.parametrize("question,answer", [
+    ({"type": "choice", "choices": [{"value": False}, {"value": "other"}]},
+     {"type": "choice", "choice": False, "confidence": 0.9,
+      "probabilities": [{"value": False, "probability": 0.9}, {"value": "other", "probability": 0.1}]}),
+    ({"type": "score", "levels": [{"label": "low"}, {"label": "high"}]},
+     {"type": "score", "score": 0.7, "confidence": 0.8,
+      "probabilities": [{"value": 0, "label": "low", "probability": 0.3},
+                        {"value": 1, "label": "high", "probability": 0.7}]}),
+])
+def test_decision_answer_required_fields_and_valid_controls(question, answer):
+    question = {**question, "instructions": "Classify this input."}
+    # Every required field must survive validation, including boolean choice values.
+    cases = [answer, {"type": "refusal"}, *[
+        {key: value for key, value in answer.items() if key != missing}
+        for missing in answer
+    ]]
+    with sdk_client(lambda request: httpx.Response(200, json=decision_body([cases.pop(0)]))) as sdk:
+        client = RailClient.openai(client=sdk)
+        for index in range(2 + len(answer)):
+            response = client.decisions.create(model="gpt-6-luna", input="test", questions=[question])
+            if index < 2:
+                assert response.error is None and response.status == "completed"
+            else:
+                assert response.error and response.usage.total_tokens == 1500
+
+
+@pytest.mark.parametrize("probability", [0, 1, 0.9, True, "0.9"])
+def test_decision_validation_preserves_sdk_numeric_normalization(probability):
+    # The SDK coerces numeric strings and booleans before tokenrail sees the answer.
+    answer = {"type": "predicate", "name": "refund", "probability": probability}
+    with sdk_client(lambda request: httpx.Response(200, json=decision_body([answer]))) as sdk:
+        response = RailClient.openai(client=sdk).decisions.create(
+            model="gpt-6-luna", input="test", questions=QUESTIONS,
+        )
+    assert response.error is None
+    assert response.answers[0]["probability"] == float(probability)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("confidence", None), ("confidence", -0.1), ("probabilities", None), ("probabilities", []),
+    ("probabilities", [None]), ("probabilities", [{"value": "yes"}]),
+    ("probabilities", [{"value": "yes", "probability": 1.1}]),
+])
+def test_decision_distributions_reject_missing_or_invalid_values(field, value):
+    answer = {"type": "choice", "choice": "yes", "confidence": 0.9,
+              "probabilities": [{"value": "yes", "probability": 1.0}], field: value}
+    with sdk_client(lambda request: httpx.Response(200, json=decision_body([answer]))) as sdk:
+        response = RailClient.openai(client=sdk).decisions.create(
+            model="gpt-6-luna", input="test", questions=[{
+                "type": "choice", "instructions": "Choose.", "choices": [{"value": "yes"}],
+            }],
+        )
+    assert response.error and response.usage.total_tokens == 1500
+
+
+def test_score_validation_allows_fractional_scores_and_one_shot_levels():
+    answer = {"type": "score", "score": 1.1, "confidence": 0.55, "probabilities": [
+        {"value": 0, "label": "low", "probability": 0.1},
+        {"value": 1, "label": "medium", "probability": 0.7},
+        {"value": 2, "label": "high", "probability": 0.2},
+    ]}
+    with sdk_client(lambda request: httpx.Response(200, json=decision_body([answer]))) as sdk:
+        response = RailClient.openai(client=sdk).decisions.create(
+            model="gpt-6-luna", input="test", questions=[{
+                "type": "score", "instructions": "Rate severity.",
+                "levels": ({"label": label} for label in ("low", "medium", "high")),
+            }],
+        )
+    assert response.error is None and response.answers[0]["score"] == 1.1
+
+
 def test_projector_cannot_remove_or_replace_decision_api(tmp_path):
     path = tmp_path / "out.jsonl"
     with sdk_client(lambda request: httpx.Response(200, json=decision_body())) as sdk:
