@@ -141,6 +141,13 @@ An individual question's refusal is saved as an answer and does not cause an
 automatic retry of the request. `output_text` and `output_parsed` are unused
 for Decisions; the original response is preserved in `raw_response`.
 
+`batch_items_from_queries()` consumes shared question iterables once, including
+`choices`, `levels`, and instruction blocks supported by the installed SDK. The
+generated jobs retain that content for later jobs and resume without changing
+the caller's dictionaries. String instructions stay unchanged. This does not
+rewind an exhausted iterator reused in separate direct calls or raw `BatchItem`
+objects.
+
 Text, image and JSON content, question definitions, and prompt-cache settings
 are forwarded as supplied. `prompt_cache_key` and `prompt_cache_options` work
 across supported SDK versions. `request_id` identifies the local job and
