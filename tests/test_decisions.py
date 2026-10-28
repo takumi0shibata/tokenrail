@@ -4,6 +4,7 @@ import copy
 import json
 
 import httpx
+import openai
 import pytest
 from openai import OpenAI
 from pydantic import BaseModel
@@ -292,6 +293,71 @@ def test_question_refusals_are_saved_and_not_automatically_reissued(tmp_path):
     for record in map(json.loads, path.read_text().splitlines()):
         assert record["answers"] == [{"type": "refusal", "name": "refund"}]
         assert record["error"] is None
+
+
+@pytest.mark.parametrize("field", ["choices", "levels", "instructions"])
+@pytest.mark.parametrize("container", [list, tuple, iter], ids=["list", "tuple", "iterator"])
+@pytest.mark.parametrize("in_body", [False, True])
+def test_shared_question_iterables_survive_fanout_and_resume(tmp_path, field, container, in_body):
+    values = {
+        "choices": [{"value": "a"}, {"value": "b"}],
+        "levels": [{"label": "low"}, {"label": "high"}],
+        "instructions": [{"type": "input_text", "text": "Evaluate the input."}],
+    }[field]
+    original = container(values)
+    question = {
+        "type": {"choices": "choice", "levels": "score", "instructions": "predicate"}[field],
+        "name": "q", "instructions": "Evaluate the input.", field: original,
+    }
+    questions = iter([question])
+    shared = {"extra_body": {"questions": questions}} if in_body else {"questions": questions}
+    items = batch_items_from_queries({"a": "first", "b": "second"}, model="gpt-6-luna", **shared)
+    assert question[field] is original
+    assert (shared["extra_body"] if in_body else shared)["questions"] is questions
+    calls = []
+
+    def handler(request):
+        calls.append(json.loads(request.content))
+        if len(calls) == 2:
+            return httpx.Response(503, json={"error": {"message": "temporary", "type": "server_error"}})
+        return httpx.Response(200, json=decision_body([{"name": "q", "type": "refusal"}]))
+
+    # Block instructions became a public SDK input in 3.37. Earlier versions
+    # cannot serialize an instructions iterator; the helper must not add support.
+    old_instruction_iterator = (
+        field == "instructions" and container is iter
+        and tuple(map(int, openai.__version__.split(".")[:2])) < (3, 37)
+    )
+    with sdk_client(handler) as sdk:
+        executor = BatchExecutor(
+            client=RailClient.openai(client=sdk), output_path=tmp_path / "out.jsonl",
+            max_workers=1, progress=False,
+        )
+        first = executor.run(items)
+        if old_instruction_iterator:
+            assert first.error_requests == 2 and calls == []
+            records = [json.loads(line) for line in (tmp_path / "out.jsonl").read_text().splitlines()]
+            assert all("not JSON serializable" in record["error"] for record in records)
+            return
+        assert first.success_requests == 1 and first.error_requests == 1
+        resumed = executor.run(items)
+        assert resumed.success_requests == 1 and resumed.skipped_requests == 1
+        assert executor.run(items).skipped_requests == 2
+    expected = {**question, field: values}
+    assert [body["questions"] for body in calls] == [[expected]] * 3
+    assert [body["input"] for body in calls] == ["first", "second", "second"]
+
+
+def test_shared_question_preparation_leaves_unrelated_json_and_strings_untouched():
+    opaque_iterator = iter([1, 2])
+    custom = {"values": opaque_iterator}
+    question = {"type": "predicate", "name": "q", "instructions": "Evaluate.", "custom": custom}
+    before = dict(question)
+    items = batch_items_from_queries({"a": "input"}, model="gpt-6-luna", questions=[question])
+    prepared = items[0].request_kwargs["questions"][0]
+    assert prepared == before and question == before
+    assert prepared["custom"] is custom
+    assert next(opaque_iterator) == 1
 
 
 @pytest.mark.parametrize("answer", [

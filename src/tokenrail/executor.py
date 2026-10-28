@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ._monitor import _RollingMetricsMonitor
-from ._requests import prepare_decision_request, request_api
+from ._requests import prepare_decision_request, prepare_shared_decision_request, request_api
 from ._storage import _JsonlWriter
 from .types import BatchItem, JsonDict, NormalizedResponse, StatsSnapshot, TimingBreakdown, UsageBreakdown
 
@@ -20,7 +20,7 @@ def batch_items_from_queries(queries: dict[str, Any], **shared_request_kwargs: A
     ``model``, ``reasoning_effort``) are applied to every item.
     """
     if request_api(shared_request_kwargs) == "decisions.create":
-        shared_request_kwargs = prepare_decision_request(shared_request_kwargs)
+        shared_request_kwargs = prepare_shared_decision_request(shared_request_kwargs)
     return [
         BatchItem(id=str(item_id), request_kwargs={"input": messages, **shared_request_kwargs})
         for item_id, messages in queries.items()
