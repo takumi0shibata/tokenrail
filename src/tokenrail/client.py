@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
+from .catalog import ModelPricing
 from .providers.base import BaseProvider
 from .providers.openai import OpenAIProvider
 from .types import NormalizedResponse
@@ -49,6 +51,7 @@ class RailClient:
         base_url: str | None = None,
         max_retries: int = 2,
         client: Any | None = None,
+        pricing: Mapping[str, Mapping[str, ModelPricing]] | None = None,
     ) -> RailClient:
         """Build a :class:`RailClient` backed by the OpenAI Python SDK.
 
@@ -63,5 +66,6 @@ class RailClient:
             timeout=timeout,
             base_url=base_url,
             max_retries=max_retries,
+            pricing=pricing,
         )
         return cls(provider=provider)

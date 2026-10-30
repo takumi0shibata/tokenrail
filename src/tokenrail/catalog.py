@@ -286,6 +286,25 @@ def get_model_capabilities(model: str) -> ModelCapabilities:
     return capability_match[1] if capability_match is not None else _DEFAULT_CAPABILITIES
 
 
+def _capabilities_without_pricing_warning(model: str) -> ModelCapabilities:
+    # Providers resolve prices separately, including explicit user overrides.
+    match = _match_rule(model, _CAPABILITY_RULES)
+    return match[1] if match is not None else _DEFAULT_CAPABILITIES
+
+
+def _infer_pricing_model(model: str) -> tuple[str, ModelPricing] | None:
+    matches = []
+    for names, pricing in _PRICING_RULES:
+        for name in names:
+            if _match_rule(model, [((name,), pricing)]) is not None:
+                matches.append((name, pricing))
+    if not matches:
+        return None
+    longest = max(len(name) for name, _ in matches)
+    winners = {name: pricing for name, pricing in matches if len(name) == longest}
+    return next(iter(winners.items())) if len(winners) == 1 else None
+
+
 def get_model_pricing(
     model: str, service_tier: str = "default", *, api: str = "responses.create"
 ) -> ModelPricing | None:
@@ -325,9 +344,16 @@ def calculate_cost(
     if pricing is None:
         return None
 
+    return _cost_from_pricing(pricing, usage, payer)
+
+
+def _cost_from_pricing(pricing: ModelPricing, usage: UsageBreakdown, payer: str | None) -> CostBreakdown:
+
     ordinary_input = max(usage.input_tokens - usage.cached_tokens - usage.cache_write_tokens, 0)
     cached_rate = pricing.cached_input_per_million or Decimal("0")
-    cache_write_rate = pricing.cache_write_input_per_million or pricing.input_per_million
+    cache_write_rate = pricing.cache_write_input_per_million
+    if cache_write_rate is None:
+        cache_write_rate = pricing.input_per_million
     total = (
         (Decimal(ordinary_input) * pricing.input_per_million)
         + (Decimal(usage.cached_tokens) * cached_rate)

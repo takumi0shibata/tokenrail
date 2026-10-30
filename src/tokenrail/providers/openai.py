@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
+from .._pricing import _PricingResolver
 from .._requests import prepare_decision_request, request_api
-from ..catalog import calculate_cost, get_model_capabilities
+from ..catalog import ModelPricing, _capabilities_without_pricing_warning
 from ..types import JsonDict, NormalizedResponse, TimingBreakdown, UsageBreakdown
 from .base import BaseProvider
 
@@ -182,7 +183,9 @@ class OpenAIProvider(BaseProvider):
         timeout: float | None = None,
         base_url: str | None = None,
         max_retries: int = 6,
+        pricing: Mapping[str, Mapping[str, ModelPricing]] | None = None,
     ) -> None:
+        self._pricing = _PricingResolver(pricing)
         self._client = client or self._build_client(
             api_key=api_key,
             organization=organization,
@@ -226,7 +229,7 @@ class OpenAIProvider(BaseProvider):
         max_output_tokens: int | None,
         response_format: JsonDict | None,
     ) -> None:
-        capabilities = get_model_capabilities(model)
+        capabilities = _capabilities_without_pricing_warning(model)
         checks = [
             ("reasoning_effort", reasoning_effort, capabilities.reasoning_effort),
             ("verbosity", verbosity, capabilities.verbosity),
@@ -402,12 +405,11 @@ class OpenAIProvider(BaseProvider):
         billing = raw.get("billing")
         actual_tier = str(raw.get("service_tier") or service_tier or "default")
         payer = billing.get("payer") if isinstance(billing, dict) else None
-        cost = calculate_cost(model=model, usage=usage, payer=payer, service_tier=actual_tier, api=api)
-        if api == "decisions.create":
-            # Azure deployments and other custom endpoints have independent pricing.
-            endpoint = str(getattr(self._client, "base_url", "https://api.openai.com/v1/")).rstrip("/")
-            if endpoint != "https://api.openai.com/v1":
-                cost = None
+        endpoint = str(getattr(self._client, "base_url", "https://api.openai.com/v1/")).rstrip("/")
+        cost = self._pricing.calculate(
+            model=model, usage=usage, payer=payer, service_tier=actual_tier, api=api,
+            custom_endpoint=endpoint != "https://api.openai.com/v1",
+        )
         status = raw.get("status")
         error = None
         if raw.get("error") is not None:

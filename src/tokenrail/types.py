@@ -82,6 +82,7 @@ class CostBreakdown:
     developer_usd: float = 0.0
     openai_usd: float = 0.0
     payer: str | None = None
+    pricing: JsonDict | None = None
 
     @classmethod
     def none(cls, payer: str | None = None) -> CostBreakdown:
@@ -93,6 +94,7 @@ class CostBreakdown:
             "developer_usd": self.developer_usd,
             "openai_usd": self.openai_usd,
             "payer": self.payer,
+            **({"pricing": to_jsonable(self.pricing)} if self.pricing is not None else {}),
         }
 
 

@@ -196,7 +196,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
         self.assertIn("0001  ok", output[2])
         self.assertIn("model=gpt-5.6-terra", output[2])
         self.assertIn("1.3k tok (+20 reasoning) (40% cached / 0% cache-write)", output[2])
-        self.assertIn("$0.100000", output[2])
+        self.assertIn("$0.10", output[2])
         self.assertIn("oai", output[2])
         self.assertIn("1.4s", output[2])
         self.assertNotIn("model=", output[3])
@@ -362,7 +362,7 @@ class MonitorAndExecutorTests(unittest.TestCase):
 
         final_lines = monitor.format_final(snapshot)
         self.assertTrue(final_lines[0].startswith("Done 2/2 · 2 ok / 0 errors"))
-        self.assertIn("Total $0.200", final_lines[1])
+        self.assertIn("Total $0.20", final_lines[1])
         self.assertFalse(any(line.startswith("Payer switches:") for line in final_lines))
         model_lines = [line.strip() for line in final_lines if " req · " in line]
         self.assertTrue(model_lines[0].startswith("gpt-5.6-luna"))
