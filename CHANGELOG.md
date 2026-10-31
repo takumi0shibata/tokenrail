@@ -10,6 +10,39 @@ designation was premature and does not describe the project's current status.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-31
+
+### Added
+
+- Accept per-client pricing overrides keyed by request deployment name and API
+  family for Responses create/parse and Decisions. Explicit rates take priority
+  and are validated before requests; missing required cache rates remain unpriced.
+- Estimate Azure and custom-endpoint token costs from the longest delimited
+  known model name when no override is supplied. Use API-specific OpenAI catalog
+  rates, warn once per client/model/operation, and leave ambiguous or unsupported
+  matches unpriced. Deployment names sent to the SDK are unchanged.
+- Save the selected pricing source, model, API and rates with estimated costs,
+  without storing endpoint URLs or credentials. Document explicit configuration
+  and the distinction between estimates and actual Azure charges.
+
+### Changed
+
+- Display positive amounts below one cent as `<$0.01`, exact zero as `$0.00`,
+  and unknown costs as `$—`. Preserve unrounded saved amounts and identify known
+  subtotals when some results are unpriced.
+- Azure Decisions results with recognized deployment names can now have cost
+  estimates instead of `cost=None`. Cost dictionaries include pricing evidence;
+  consumers that enforce a fixed JSON schema should allow the new `pricing` key.
+
+### Fixed
+
+- Validate Decisions answer types, required values and question correspondence.
+  Keep malformed answers retryable while retaining the raw response and usage;
+  preserve valid refusals.
+- Materialize shared Decisions question iterables once before expanding batch
+  queries, preserving their content across jobs and resume without narrowing SDK
+  input types or mutating caller-owned dictionaries.
+
 ## [0.6.0] - 2026-10-26
 
 ### Added
