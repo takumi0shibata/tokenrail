@@ -201,8 +201,10 @@ For Microsoft Entra ID authentication, configure the SDK client with your
 token provider before injecting it. Confirm that your deployment and region
 support Decisions; see the
 [Azure guide](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/decisions).
-Decisions usage is tracked on Azure and other custom endpoints, but `cost` is
-`None`: tokenrail does not assume OpenAI prices apply to them.
+Azure and other custom endpoints support per-deployment pricing overrides.
+Without an override, tokenrail estimates costs from a matching OpenAI model
+name and warns that these are not guaranteed Azure or custom-endpoint charges.
+Unmatched or ambiguous names remain unpriced. See [Custom pricing](#custom-pricing).
 
 ## Result saving
 
@@ -414,14 +416,18 @@ emit `ModelCatalogFallbackWarning`. Check the warning before relying on the
 estimate or supported parameters.
 
 Prices are selected per API operation. Decisions has separate rates, including
-zero output-token cost and distinct cache-read/write accounting. Its price
-estimate is available for registered models on `https://api.openai.com/v1/`;
-custom endpoints and Azure deployments return `cost=None`. Usage is always
-recorded when supplied by the API. `stats.unpriced_requests` counts results
-without a cost estimate. Progress summaries label partial cost totals as a
-known subtotal and show `$—` when every result is unpriced. Numeric cost totals
-in statistics contain only known estimates, not an estimate for the missing
-requests.
+zero output-token cost and distinct cache-read/write accounting. A matched model
+must have pricing for that API; Responses prices are never substituted for
+missing Decisions prices. `responses.create` and `responses.parse` use the same
+Responses rates.
+
+`stats.unpriced_requests` counts results without a cost estimate. Progress
+summaries label partial cost totals as a known subtotal and show `$—` when every
+result is unpriced. Numeric cost totals in statistics contain only known
+estimates: `nominal_usd=0` with unpriced requests does not mean those requests
+were free. Positive amounts below one cent display as `<$0.01`, exact zero as
+`$0.00`, and other amounts with two decimal places. Saved numeric amounts are
+not rounded for display.
 
 The capability catalog validates options such as `reasoning_effort`,
 `temperature` and `top_p` before sending. Support is model-specific; for example,
@@ -431,6 +437,74 @@ Where the API includes `billing.payer`, tokenrail uses it to attribute nominal
 costs. A payer of `openai` is recorded as OpenAI-covered. Unknown payer values
 remain unknown; monitoring does not enforce a spending limit or stop batches
 when the payer changes.
+
+## Custom pricing
+
+Pass an optional `pricing` mapping to `RailClient.openai()` or `OpenAIProvider`.
+Keys are the exact **request deployment/model names**, then `"responses"` or
+`"decisions"`. Overrides belong to that client and take priority over the catalog;
+they are copied when the client is constructed and are never sent to the API.
+The deployment name sent to the SDK is unchanged.
+
+```python
+from decimal import Decimal
+from tokenrail import RailClient
+from tokenrail.catalog import ModelPricing
+
+# Syntax example only: replace these example rates with your own USD/1M-token rates.
+responses_price = ModelPricing(
+    input_per_million=Decimal("1.00"),
+    cached_input_per_million=Decimal("0.25"),
+    output_per_million=Decimal("2.00"),
+    cache_write_input_per_million=Decimal("1.25"),
+)
+decisions_price = ModelPricing(
+    input_per_million=Decimal("1.00"),
+    cached_input_per_million=Decimal("0.25"),
+    output_per_million=Decimal("0"),
+    cache_write_input_per_million=Decimal("1.25"),
+)
+rail = RailClient.openai(
+    client=client,  # Your existing OpenAI or Azure OpenAI SDK client.
+    pricing={
+        "my-deployment": {
+            "responses": responses_price,
+            "decisions": decisions_price,
+        },
+    },
+)
+```
+
+All specified rates must be finite and non-negative; invalid settings fail at
+client construction, before any request. Zero is an explicit free rate.
+Optional cache rates can be `None` when unused. If the response reports cache
+reads or writes whose override rate is missing, cost is unknown (`None`), with
+a warning; tokenrail does not silently treat that usage as free. Select rates
+appropriate to your region, deployment type, service tier and contract. These
+estimates cover token charges, not every possible invoice charge.
+
+Without an override for that deployment and API, tokenrail uses the longest
+known model name delimited by `-`, `_`, `/`, `:`, space, `.` or the ends of the
+name. Matching is case-sensitive: `prod-gpt-4o-mini-east` matches `gpt-4o-mini`,
+while `abcgpt-4oxyz` does not match. Equally long distinct matches, no match, or
+missing API-specific prices leave the request unpriced. Model capability and
+request validation rules are unchanged by pricing overrides.
+
+On custom endpoints, even exact model names use **OpenAI catalog estimates**,
+not verified Azure prices. Inferred deployment matches also emit
+`ModelCatalogFallbackWarning` with the matched model, API and override syntax.
+Pricing warnings are emitted once per client, request model and API operation,
+including concurrent batch requests. An explicit complete override needs no
+pricing fallback warning. The built-in catalog's existing default-tier,
+long-context and regional-pricing limitations still apply.
+
+`response.cost.to_dict()` includes `pricing` evidence: source (`explicit` or
+`openai_catalog`), requested and matched model, API operation, service tier,
+custom-endpoint flag and applied rates in USD per million tokens. It stores no
+endpoint URL or credentials. The default JSONL includes this evidence; a custom
+projector retains it by including `response.cost.to_dict()`. Original API data
+under `raw_response` is unchanged. Payer metadata is independent of the chosen
+rates; an estimate does not establish who is billed.
 
 ## Troubleshooting
 

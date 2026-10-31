@@ -175,7 +175,7 @@ def test_explicit_responses_namespace_rejects_questions(method, in_body):
 @pytest.mark.parametrize("endpoint", [
     "https://resource.openai.azure.com/openai/v1/", "https://proxy.test/v1/",
 ])
-def test_custom_endpoints_preserve_deployment_names_and_do_not_guess_prices(endpoint, model):
+def test_custom_endpoints_preserve_deployment_names_and_estimate_known_models(endpoint, model):
     calls = []
 
     def handler(request):
@@ -185,7 +185,12 @@ def test_custom_endpoints_preserve_deployment_names_and_do_not_guess_prices(endp
     with sdk_client(handler, base_url=endpoint) as sdk:
         response = RailClient.openai(client=sdk).decisions.create(model=model, input="test", questions=QUESTIONS)
     assert calls == [(endpoint + "decisions", model)]
-    assert response.error is None and response.cost is None
+    assert response.error is None
+    if model == "gpt-6-luna":
+        assert response.cost.nominal_usd == pytest.approx(0.0001225)
+        assert response.cost.pricing["matched_model"] == "gpt-6-luna"
+    else:
+        assert response.cost is None
     assert response.usage.total_tokens == 1500
 
 
@@ -478,7 +483,7 @@ def test_projector_cannot_remove_or_replace_decision_api(tmp_path):
 
 
 def test_azure_batch_reports_unpriced_results_instead_of_a_zero_cost_total(tmp_path, capsys):
-    items = batch_items_from_queries({"job": "test"}, model="gpt-6-luna", questions=QUESTIONS)
+    items = batch_items_from_queries({"job": "test"}, model="unknown-deployment", questions=QUESTIONS)
     with sdk_client(
         lambda request: httpx.Response(200, json=decision_body()),
         base_url="https://resource.openai.azure.com/openai/v1/",
