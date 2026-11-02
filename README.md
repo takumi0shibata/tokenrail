@@ -140,6 +140,10 @@ dictionaries in question order. The answer types are `predicate`, `choice`,
 An individual question's refusal is saved as an answer and does not cause an
 automatic retry of the request. `output_text` and `output_parsed` are unused
 for Decisions; the original response is preserved in `raw_response`.
+Answers are checked against their question's choices and score levels. An
+out-of-domain answer makes the request a failed result while retaining its raw
+response and usage; resume retries that job. Fractional scores within the level
+range and valid refusal answers remain supported.
 
 `batch_items_from_queries()` consumes shared question iterables once, including
 `choices`, `levels`, and instruction blocks supported by the installed SDK. The
