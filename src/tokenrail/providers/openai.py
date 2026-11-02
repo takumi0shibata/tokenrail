@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from .._pricing import _PricingResolver
-from .._requests import prepare_decision_request, request_api
+from .._requests import prepare_shared_decision_request, request_api
 from ..catalog import ModelPricing, _capabilities_without_pricing_warning
 from ..types import JsonDict, NormalizedResponse, TimingBreakdown, UsageBreakdown
 from .base import BaseProvider
@@ -106,13 +106,21 @@ def _valid_decision_answer(answer: Any, question: JsonDict) -> bool:
     if kind not in ("choice", "score") or not probability(answer.get("confidence")):
         return False
 
+    choices = question.get("choices")
+    levels = question.get("levels")
+
     def choice_value(value: Any) -> bool:
-        return type(value) in (str, bool)
+        return type(value) in (str, bool) and isinstance(choices, list) and any(
+            isinstance(choice, dict) and type(choice.get("value")) is type(value) and choice["value"] == value
+            for choice in choices
+        )
 
     if kind == "choice" and not choice_value(answer.get("choice")):
         return False
-    if kind == "score" and not finite_number(answer.get("score")):
-        return False
+    if kind == "score":
+        score = answer.get("score")
+        if not isinstance(levels, list) or not finite_number(score) or not 0 <= score <= len(levels) - 1:
+            return False
     probabilities = answer.get("probabilities")
     if not isinstance(probabilities, list) or not probabilities:
         return False
@@ -124,9 +132,11 @@ def _valid_decision_answer(answer: Any, question: JsonDict) -> bool:
                 return False
         else:
             value = item.get("value")
-            if type(value) is not int or value < 0:
+            if type(value) is not int or not 0 <= value < len(levels):
                 return False
-            if not isinstance(item.get("label"), str):
+            level = levels[value]
+            if (not isinstance(item.get("label"), str) or not isinstance(level, dict)
+                    or item["label"] != level.get("label")):
                 return False
     return True
 
@@ -462,7 +472,7 @@ class OpenAIProvider(BaseProvider):
         ``metadata`` is local result metadata; it is not sent to Decisions.
         Cache controls use extra_body to support the minimum SDK version.
         """
-        payload = prepare_decision_request({"model": model, "input": input, "questions": questions, **extra})
+        payload = prepare_shared_decision_request({"model": model, "input": input, "questions": questions, **extra})
         if prompt_cache_key is not None:
             payload["prompt_cache_key"] = prompt_cache_key
         payload = _prepare_payload(payload, prompt_cache_options)
