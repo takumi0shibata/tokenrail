@@ -385,6 +385,13 @@ class OpenAIProvider(BaseProvider):
         )
         return payload
 
+    def _custom_endpoint(self) -> bool:
+        endpoint = str(getattr(self._client, "base_url", "https://api.openai.com/v1/")).rstrip("/")
+        return endpoint != "https://api.openai.com/v1"
+
+    def _preflight_pricing(self, payload: JsonDict, api: str) -> None:
+        self._pricing.preflight(model=payload["model"], api=api, custom_endpoint=self._custom_endpoint())
+
     def _normalize_response(
         self,
         *,
@@ -405,10 +412,9 @@ class OpenAIProvider(BaseProvider):
         billing = raw.get("billing")
         actual_tier = str(raw.get("service_tier") or service_tier or "default")
         payer = billing.get("payer") if isinstance(billing, dict) else None
-        endpoint = str(getattr(self._client, "base_url", "https://api.openai.com/v1/")).rstrip("/")
         cost = self._pricing.calculate(
             model=model, usage=usage, payer=payer, service_tier=actual_tier, api=api,
-            custom_endpoint=endpoint != "https://api.openai.com/v1",
+            custom_endpoint=self._custom_endpoint(),
         )
         status = raw.get("status")
         error = None
@@ -465,6 +471,7 @@ class OpenAIProvider(BaseProvider):
                 **(payload.get("extra_body") or {}), "prompt_cache_key": payload.pop("prompt_cache_key")
             }
 
+        self._preflight_pricing(payload, "decisions.create")
         started_at = time.time()
         started_monotonic = time.monotonic()
         response = self._client.decisions.create(**payload)
@@ -529,6 +536,7 @@ class OpenAIProvider(BaseProvider):
             **extra,
         )
 
+        self._preflight_pricing(payload, "responses.create")
         started_at = time.time()
         started_monotonic = time.monotonic()
         response = self._responses.create(**payload)
@@ -584,6 +592,7 @@ class OpenAIProvider(BaseProvider):
             **extra,
         )
 
+        self._preflight_pricing(payload, "responses.parse")
         started_at = time.time()
         started_monotonic = time.monotonic()
         raw_api = getattr(self._responses, "with_raw_response", None)
