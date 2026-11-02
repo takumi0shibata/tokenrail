@@ -493,6 +493,13 @@ request validation rules are unchanged by pricing overrides.
 On custom endpoints, even exact model names use **OpenAI catalog estimates**,
 not verified Azure prices. Inferred deployment matches also emit
 `ModelCatalogFallbackWarning` with the matched model, API and override syntax.
+Configuration pricing warnings are checked before sending a request. If you
+promote `ModelCatalogFallbackWarning` to an exception, these warnings prevent
+sending. Warnings that depend on returned usage (such as missing cache rates)
+cannot be checked in advance: if promoted to exceptions, they are logged instead,
+and the completed response and usage are retained with unknown cost. This keeps
+resume from repeating a successful request solely because of a pricing warning.
+
 Pricing warnings are emitted once per client, request model and API operation,
 including concurrent batch requests. An explicit complete override needs no
 pricing fallback warning. The built-in catalog's existing default-tier,

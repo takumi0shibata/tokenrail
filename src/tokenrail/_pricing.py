@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import warnings
 from collections.abc import Mapping
@@ -55,53 +56,72 @@ class _PricingResolver:
         self._warned: set[tuple[str, str]] = set()
         self._lock = threading.Lock()
 
-    def _warn(self, model: str, api: str, reason: str) -> None:
+    def _warn(self, model: str, api: str, reason: str, *, after_response: bool = False) -> None:
         family = api.split(".")[0]
         with self._lock:
             key = (model, api)
             if key in self._warned:
                 return
+            try:
+                warnings.warn(
+                    f"api={api}\n  deployment={model!r}; {reason}\n"
+                    "  Set RailClient.openai(client=client,\n"
+                    f"      pricing={{{model!r}: {{{family!r}: your_model_pricing}}}})\n"
+                    "  using ModelPricing(...) with your USD-per-1M-token rates.\n"
+                    "  See README: Custom pricing.",
+                    ModelCatalogFallbackWarning,
+                    stacklevel=4,
+                )
+            except ModelCatalogFallbackWarning as exc:
+                if not after_response:
+                    # Keep rejecting later attempts too, without spending tokens.
+                    raise
+                # Usage-dependent warnings must not discard a paid response or
+                # make resume resend it. Report once, retaining unknown cost.
+                logging.getLogger(__name__).warning("Completed response retained with unknown cost: %s", exc)
             self._warned.add(key)
-        warnings.warn(
-            f"api={api}\n  deployment={model!r}; {reason}\n"
-            "  Set RailClient.openai(client=client,\n"
-            f"      pricing={{{model!r}: {{{family!r}: your_model_pricing}}}})\n"
-            "  using ModelPricing(...) with your USD-per-1M-token rates.\n"
-            "  See README: Custom pricing.",
-            ModelCatalogFallbackWarning,
-            stacklevel=4,
-        )
 
-    def calculate(
-        self, *, model: str, api: str, usage: UsageBreakdown, payer: str | None,
-        custom_endpoint: bool, service_tier: str,
-    ) -> CostBreakdown | None:
+    def preflight(self, *, model: str, api: str, custom_endpoint: bool) -> None:
+        """Let strict warning filters reject configuration before spending tokens."""
+        self._resolve(model=model, api=api, custom_endpoint=custom_endpoint)
+
+    def _resolve(
+        self, *, model: str, api: str, custom_endpoint: bool,
+    ) -> tuple[ModelPricing | None, str | None, bool]:
         family = api.split(".")[0]
         price = self._overrides.get(model, {}).get(family)
         explicit = price is not None
         matched_model = None
-        if explicit:
-            if ((usage.cached_tokens and price.cached_input_per_million is None)
-                    or (usage.cache_write_tokens and price.cache_write_input_per_million is None)):
-                self._warn(model, api, "required cache pricing is missing. Cost is unknown, not free.")
-                return None
-        else:
+        if not explicit:
             match = _infer_pricing_model(model)
             if match is None:
                 self._warn(model, api, "no unique matching model price. Cost is unknown, not free.")
-                return None
+                return None, None, False
             matched_model, response_price = match
             price = (get_model_pricing(matched_model, api=api) if family == "decisions" else response_price)
             if price is None:
                 self._warn(model, api, f"matched model={matched_model!r}, but no {family} price is registered. "
                            "Cost is unknown, not free.")
-                return None
+                return None, None, False
             if custom_endpoint or not _is_registered_model_name(model, match):
                 self._warn(
                     model, api, f"matched model={matched_model!r}.\n"
                     "  Using OpenAI catalog rates as an estimate.\n"
                     "  This does not guarantee your Azure or custom-endpoint billed amount.",
                 )
+        return price, matched_model, explicit
+
+    def calculate(
+        self, *, model: str, api: str, usage: UsageBreakdown, payer: str | None,
+        custom_endpoint: bool, service_tier: str,
+    ) -> CostBreakdown | None:
+        price, matched_model, explicit = self._resolve(model=model, api=api, custom_endpoint=custom_endpoint)
+        if price is None:
+            return None
+        if explicit and ((usage.cached_tokens and price.cached_input_per_million is None)
+                         or (usage.cache_write_tokens and price.cache_write_input_per_million is None)):
+            self._warn(model, api, "required cache pricing is missing. Cost is unknown, not free.", after_response=True)
+            return None
         cost = _cost_from_pricing(price, usage, payer)
         # Include the applied fallback rates, not just the optional catalog entries.
         rates = {name: str(getattr(price, name)) if getattr(price, name) is not None else None
