@@ -6,6 +6,7 @@ RPM/TPM submit throttling, per-model token/cost monitoring, and resumable JSONL
 result writing.
 """
 
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _distribution_version
 
 from .client import RailClient
@@ -13,7 +14,10 @@ from .executor import BatchExecutor, batch_items_from_queries
 from .providers import OpenAIProvider
 from .types import BatchItem, CostBreakdown, NormalizedResponse, StatsSnapshot, UsageBreakdown
 
-__version__ = _distribution_version("tokenrail")
+try:
+    __version__ = _distribution_version("tokenrail")
+except _PackageNotFoundError:
+    __version__ = "0+unknown"
 
 __all__ = [
     "__version__",
